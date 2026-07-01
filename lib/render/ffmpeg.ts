@@ -123,6 +123,8 @@ export interface RenderComposition {
   outW: number;
   outH: number;
   fps: number;
+  outputDurationSec: number; // 컷 반영 후 예상 결과 길이(진행률 계산용)
+  brollCount: number; // 실제 파일이 매칭된 B-roll 오버레이 수
   applied: string[];
 }
 
@@ -142,6 +144,7 @@ export function composeRender(plan: EditPlan, baseName: string, opts: ComposeOpt
   const keep = computeKeepRanges(plan.events, total);
   const remap = buildRemapper(keep);
   const remapped = remapEvents(plan.events, remap, keep);
+  const outputDurationSec = plan.settings.cut.enabled ? remap.outputDuration : total;
 
   // B-roll 입력 해석
   const extraInputs: string[] = [];
@@ -186,6 +189,8 @@ export function composeRender(plan: EditPlan, baseName: string, opts: ComposeOpt
     outW,
     outH,
     fps,
+    outputDurationSec,
+    brollCount: brollInputs.length,
     applied: filter.applied,
   };
 }
@@ -195,8 +200,12 @@ export function buildFfmpegArgs(
   comp: RenderComposition,
   inputPath: string,
   outputPath: string,
+  opts: { progress?: boolean } = {},
 ): string[] {
-  const args = ["-y", "-i", inputPath];
+  const args = ["-y"];
+  // 진행률 파싱용(stderr 로 기계가 읽기 좋은 key=value 출력)
+  if (opts.progress) args.push("-progress", "pipe:2");
+  args.push("-i", inputPath);
   for (const f of comp.extraInputs) args.push("-i", f);
 
   args.push("-filter_complex", comp.filterComplex);
@@ -255,18 +264,33 @@ export interface RenderResult {
   message: string;
 }
 
+export type RenderStageName = "preparing" | "extracting" | "running" | "finalizing";
+export interface RenderProgress {
+  stage: RenderStageName;
+  percent: number; // 0~100
+}
+
+export interface RenderOptions {
+  resolveBrollFile?: (f: string) => string | null;
+  onProgress?: (p: RenderProgress) => void;
+}
+
 /**
  * 실제 렌더 실행(로컬 전용).
  * outputDir 에 ASS 사이드카를 쓰고, 그 폴더를 cwd 로 ffmpeg 를 실행한다.
+ * onProgress 로 단계/진행률을 보고한다.
  */
 export async function renderPlan(
   plan: EditPlan,
   inputPath: string,
   outputPath: string,
-  options: { resolveBrollFile?: (f: string) => string | null } = {},
+  options: RenderOptions = {},
 ): Promise<RenderResult> {
   const outputDir = path.dirname(outputPath);
   const baseName = path.basename(outputPath, path.extname(outputPath));
+  const report = options.onProgress ?? (() => {});
+
+  report({ stage: "preparing", percent: 0 });
 
   const { ffmpeg } = await checkFfmpeg();
   if (!ffmpeg) {
@@ -281,6 +305,7 @@ export async function renderPlan(
     };
   }
 
+  report({ stage: "extracting", percent: 0 });
   const hasAudio = await probeHasAudio(inputPath);
   const comp = composeRender(plan, baseName, {
     hasAudio,
@@ -292,11 +317,26 @@ export async function renderPlan(
     await writeFile(path.join(outputDir, comp.assFileName), comp.assContent, "utf8");
   }
 
-  const args = buildFfmpegArgs(comp, inputPath, outputPath);
+  // ffmpeg 는 진행률 파싱을 위해 -progress pipe:2(=stderr) 를 추가한다.
+  const args = buildFfmpegArgs(comp, inputPath, outputPath, { progress: true });
   const command = `ffmpeg ${args.map(shellQuote).join(" ")}`;
+  const outDur = comp.outputDurationSec || plan.stats.originalDurationSec || 1;
 
+  report({ stage: "running", percent: 1 });
   try {
-    await run("ffmpeg", args, { timeoutMs: 1000 * 60 * 30, cwd: outputDir });
+    await run("ffmpeg", args, {
+      timeoutMs: 1000 * 60 * 60,
+      cwd: outputDir,
+      onStderr: (line) => {
+        // -progress 출력: out_time_us=..., 또는 일반 로그의 time=HH:MM:SS.xx
+        const sec = parseProgressSeconds(line);
+        if (sec !== null) {
+          const percent = Math.max(1, Math.min(99, Math.round((sec / outDur) * 100)));
+          report({ stage: "running", percent });
+        }
+      },
+    });
+    report({ stage: "finalizing", percent: 99 });
     return { ok: true, command, outputPath, applied: comp.applied, message: "렌더링 완료" };
   } catch (err) {
     return {
@@ -307,6 +347,19 @@ export async function renderPlan(
       message: `렌더링 실패: ${(err as Error).message}`,
     };
   }
+}
+
+/** ffmpeg 진행 로그 한 줄에서 처리된 초를 뽑는다(-progress 또는 일반 로그). */
+function parseProgressSeconds(line: string): number | null {
+  // -progress: out_time_us=1234567  또는 out_time_ms=  (ffmpeg 버전차)
+  const us = line.match(/out_time_us=(\d+)/);
+  if (us) return Number(us[1]) / 1_000_000;
+  const ms = line.match(/out_time_ms=(\d+)/);
+  if (ms) return Number(ms[1]) / 1_000_000; // ffmpeg 의 out_time_ms 는 사실 마이크로초 단위
+  // 일반 로그: time=00:00:03.20
+  const t = line.match(/time=(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  if (t) return Number(t[1]) * 3600 + Number(t[2]) * 60 + Number(t[3]);
+  return null;
 }
 
 /* --------------------------- 내부 유틸 --------------------------- */
@@ -358,12 +411,17 @@ function hasBinary(bin: string): Promise<boolean> {
 function run(
   bin: string,
   args: string[],
-  opts: { timeoutMs?: number; cwd?: string } = {},
+  opts: {
+    timeoutMs?: number;
+    cwd?: string;
+    onStderr?: (line: string) => void;
+  } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const p = spawn(bin, args, { cwd: opts.cwd });
     let stdout = "";
     let stderr = "";
+    let lineBuf = "";
     const timer = opts.timeoutMs
       ? setTimeout(() => {
           p.kill("SIGKILL");
@@ -372,7 +430,18 @@ function run(
       : null;
 
     p.stdout.on("data", (d) => (stdout += d.toString()));
-    p.stderr.on("data", (d) => (stderr += d.toString()));
+    p.stderr.on("data", (d) => {
+      const s = d.toString();
+      stderr += s;
+      // 마지막 800자만 유지(메모리 절약)
+      if (stderr.length > 4000) stderr = stderr.slice(-2000);
+      if (opts.onStderr) {
+        lineBuf += s;
+        const parts = lineBuf.split(/[\r\n]+/);
+        lineBuf = parts.pop() ?? "";
+        for (const line of parts) if (line.trim()) opts.onStderr(line.trim());
+      }
+    });
     p.on("error", (err) => {
       if (timer) clearTimeout(timer);
       reject(err);

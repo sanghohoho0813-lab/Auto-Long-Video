@@ -7,7 +7,13 @@
  * 자막 이벤트는 강조 토큰을 실제 색상/크기로 미리보기한다.
  */
 
-import type { EditEvent, EditPlan, EmphasisToken, SubtitlePayload } from "@/lib/types";
+import type {
+  EditEvent,
+  EditPlan,
+  EmphasisToken,
+  SubtitlePayload,
+  BrollPayload,
+} from "@/lib/types";
 import { EVENT_META, formatTime } from "@/lib/eventMeta";
 
 export default function EditList({ plan }: { plan: EditPlan }) {
@@ -54,5 +60,27 @@ function renderLabel(e: EditEvent, plan: EditPlan): React.ReactNode {
       </span>
     );
   }
+
+  if (e.type === "broll") {
+    const p = (e.payload ?? {}) as unknown as BrollPayload;
+    const cats = p.categories ?? [];
+    return (
+      <span className="broll-preview">
+        <span style={{ color: "var(--text-mute)", marginRight: 6 }}>B-roll</span>
+        {cats.map((c) => (
+          <span key={c} className="cat-chip">
+            {c}
+          </span>
+        ))}
+        {p.suggestedFile ? (
+          <span className="broll-file">📁 {p.suggestedFile}</span>
+        ) : (
+          <span className="broll-nofile">파일 없음 · 추천 카테고리만 생성</span>
+        )}
+        {p.reason && <span className="broll-reason">· {p.reason}</span>}
+      </span>
+    );
+  }
+
   return e.label;
 }

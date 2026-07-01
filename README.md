@@ -165,7 +165,8 @@ render/
 ├── timeline.ts             # 컷 반영 후 이벤트 시각 리맵(오버레이 어긋남 방지)
 ├── ass.ts                  # 자막(키워드 강조) + 팝업 → ASS 자막 파일 생성
 ├── filtergraph.ts          # EditPlan → ffmpeg filter_complex
-├── ffmpeg.ts               # 구성/실행(probe·compose·args·renderPlan)
+├── ffmpeg.ts               # 구성/실행(probe·compose·args·renderPlan·진행률)
+├── jobs.ts                 # 렌더 잡 상태 저장(단계·진행률·소요시간)
 └── whisper.ts              # Whisper 자동 자막(멀티 백엔드 CLI 어댑터)
 ```
 
@@ -206,8 +207,12 @@ transcript + settings + videoMeta
 `fonts-nanum`, Noto Sans CJK) 권장. 미설치 시 UI 는 실제 렌더 대신 **ffmpeg 명령어만**
 보여줍니다.
 
-**흐름**: `실제 렌더링 시작` → `/api/render`(로컬 실행) → `storage/output/<name>_edited.mp4`
-→ UI 의 **결과 mp4 다운로드**(`/api/download`).
+**흐름**: `실제 렌더링 시작` → `/api/render`(POST, 잡 생성 후 백그라운드 렌더 · `jobId` 반환)
+→ UI 가 `GET /api/render?jobId=...` 를 **1초마다 폴링**해 단계·진행률(%)·소요시간 표시
+→ 완료 시 `storage/output/<name>_edited.mp4` → **결과 mp4 다운로드**(`/api/download`).
+
+진행 단계: `렌더링 준비 → 입력·자막 준비 → ffmpeg 실행(효과·자막, %) → 마무리 → 완료`.
+10분 이상 영상은 오래 걸릴 수 있다는 안내를 표시하며, 창을 닫아도 서버에서 렌더는 계속됩니다.
 
 > ⚠️ Vercel(서버리스)에서는 실제 렌더링을 실행하지 않고 명령어만 반환합니다.
 > 긴 영상은 렌더링에 수 분 이상 걸릴 수 있습니다.
@@ -268,23 +273,37 @@ UI 의 **"🎙️ 영상에서 자동 자막 생성"** → `/api/transcribe`(로
   (B-roll 오버레이 구조 준비 · 로컬 전용 · Vercel 은 명령만 반환)
 - **3단계 (현재)**: Whisper 자동 자막 ✅ — faster-whisper / openai-whisper / whisper.cpp /
   custom CLI 백엔드 자동 감지, mp4 → transcript 자동 생성 (로컬 전용, Vercel 은 안내만)
-- **4단계**: B-roll 추천 알고리즘 고도화 (임베딩 기반 문맥 매칭) + 렌더 워커 분리(진행률 스트리밍)
+- **4단계 (현재)**: B-roll 추천 고도화(warning/checklist 카테고리 · 키워드 사전 확장 ·
+  최근 카테고리 회피 · 최소 간격) + 실제 overlay 렌더 + **렌더 진행률 표시(잡 폴링)** ✅
+- **다음**: 임베딩 기반 B-roll 문맥 매칭, 렌더 워커 분리(진행률 스트리밍/큐)
 
 ---
 
 ## 📁 B-roll 폴더 구조
 
-`storage/broll/<category>/` 아래에 짧은 클립을 넣어두면 자동 매칭됩니다.
+`storage/broll/<category>/` 아래에 짧은 클립(3~5초 권장)을 넣어두면,
+transcript 키워드에 맞춰 자동으로 골라 삽입됩니다.
+지원 확장자: **mp4 · mov · webm** (그 외 mkv·m4v 도 스캔).
+
+| 폴더 | 이럴 때 삽입 | 어떤 영상을 넣으면 좋은지 (예시) |
+|------|-------------|-------------------------------|
+| `tax` | 법인세·세액공제·절세·감면 | 세금 계산서, 세무 서류, 계산기 두드리는 손, 세무서 |
+| `document` | 서류·신고·요건·절차 | 서류 넘기는 장면, 계약서, 결재판, 도장 찍기 |
+| `government` | 정책자금·지원금·정부·소상공인 | 정부청사, 관공서 간판, 정책 안내 포스터, 태극기 |
+| `money` | 매출·자금·현금·지원금 | 지폐/동전, 통장, 카드 결제, 그래프 상승 |
+| `business_owner` | 대표님·사업자·사장님·법인 | 대표 인터뷰컷, 사무실의 대표, 명함, 악수 |
+| `office` | 회사·직원·창업 | 사무실 전경, 노트북 작업, 회의실, 협업 장면 |
+| `meeting` | 계약·상담·미팅·컨설팅 | 미팅 테이블, 상담 장면, 화상회의, 서류 검토 |
+| `warning` | 위험·놓치면·불이익·주의·손해 | 경고 아이콘, 빨간불, 하락 그래프, 마감 시계 |
+| `checklist` | 체크·확인·준비물·요건·단계 | 체크리스트 표시, 리스트 항목, 도장/확인 마크 |
 
 ```
 storage/broll/
-├── government/   # 정책자금·지원금
-├── tax/          # 법인세·절세
-├── money/        # 금액·자금
-├── document/     # 서류·신고
-├── business_owner/
-├── office/
-└── meeting/      # 상담·계약
+├── tax/            ├── government/     ├── business_owner/   ├── meeting/
+├── document/       ├── money/          ├── office/           ├── warning/
+└── checklist/
 ```
 
-카테고리: `office`, `money`, `meeting`, `document`, `tax`, `government`, `business_owner`
+> 파일이 없어도 편집 계획은 정상 생성되며, 해당 B-roll 은 "추천 카테고리만 생성 /
+> 파일 없음"으로 표시됩니다. 렌더 시에도 파일이 있는 B-roll 만 실제로 오버레이됩니다
+> (없으면 안전하게 건너뜀 · 원본 오디오 유지).

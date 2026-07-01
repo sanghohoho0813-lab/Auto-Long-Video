@@ -75,6 +75,8 @@ const VALID_CATEGORIES: BrollCategory[] = [
   "tax",
   "government",
   "business_owner",
+  "warning",
+  "checklist",
 ];
 
 function isBrollCategory(v: string): v is BrollCategory {

@@ -93,39 +93,64 @@ export const BROLL_CATEGORY_KEYWORDS: Array<{
   categories: BrollCategory[];
   keywords: string[];
 }> = [
+  // 위험/주의 신호가 최우선(놓치면·불이익 등은 강한 신호)
+  {
+    categories: ["warning", "checklist"],
+    keywords: ["위험", "놓치면", "불이익", "주의", "손해", "과태료", "가산세", "실수", "함정"],
+  },
   {
     categories: ["government", "money"],
-    keywords: ["정책자금", "지원금", "고용지원금", "정부", "지원", "융자"],
+    keywords: ["정책자금", "지원금", "고용지원금", "정부", "소상공인", "융자", "보조금", "지원사업"],
   },
   {
     categories: ["tax", "document"],
-    keywords: ["법인세", "세금", "절세", "세액공제", "감면", "환급", "신고"],
+    keywords: ["법인세", "세액공제", "절세", "감면", "세금", "환급", "신고", "부가세", "종합소득세"],
   },
   {
     categories: ["business_owner", "office"],
-    keywords: ["대표님", "사업자", "법인", "회사", "창업", "직원"],
+    keywords: ["대표님", "사업자", "사장님", "법인", "회사", "창업", "직원", "임직원"],
   },
   {
-    categories: ["meeting", "office"],
-    keywords: ["상담", "계약", "미팅", "회의", "문의", "예약"],
+    categories: ["meeting", "document"],
+    keywords: ["계약", "상담", "미팅", "회의", "문의", "예약", "컨설팅", "검토"],
+  },
+  {
+    categories: ["checklist", "document"],
+    keywords: ["체크", "확인", "준비물", "서류", "요건", "조건", "절차", "단계"],
   },
   {
     categories: ["money", "document"],
-    keywords: ["매출", "비용", "수익", "통장", "현금", "자금"],
+    keywords: ["매출", "비용", "수익", "통장", "현금", "자금", "이익", "원가"],
   },
 ];
 
-/** 문장에서 매칭되는 B-roll 카테고리를 우선순위대로 반환한다. */
+/**
+ * 문장에서 매칭되는 B-roll 카테고리를 우선순위대로 반환한다.
+ * 여러 규칙이 매칭되면 앞선(더 강한) 규칙의 카테고리를 우선하되,
+ * 뒤 규칙의 대표 카테고리도 후보로 덧붙여 다양성을 확보한다.
+ */
 export function matchBrollCategories(text: string): {
   categories: BrollCategory[];
   matchedKeyword: string | null;
 } {
+  const hits: Array<{ cat: BrollCategory; keyword: string }> = [];
   for (const rule of BROLL_CATEGORY_KEYWORDS) {
     const hit = rule.keywords.find((k) => text.includes(k));
     if (hit) {
-      return { categories: rule.categories, matchedKeyword: hit };
+      for (const c of rule.categories) hits.push({ cat: c, keyword: hit });
     }
   }
-  // 아무 것도 매칭 안 되면 무난한 기본값
-  return { categories: ["office", "business_owner"], matchedKeyword: null };
+  if (hits.length === 0) {
+    return { categories: ["office", "business_owner"], matchedKeyword: null };
+  }
+  // 중복 제거(순서 유지)
+  const seen = new Set<BrollCategory>();
+  const categories: BrollCategory[] = [];
+  for (const h of hits) {
+    if (!seen.has(h.cat)) {
+      seen.add(h.cat);
+      categories.push(h.cat);
+    }
+  }
+  return { categories, matchedKeyword: hits[0].keyword };
 }

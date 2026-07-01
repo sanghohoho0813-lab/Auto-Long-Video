@@ -11,7 +11,7 @@
  * - ffmpeg 렌더 요청 (MVP: 명령어 확인 / 실제 렌더)
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EditPlan } from "@/lib/types";
 import { EVENT_META, EVENT_ORDER } from "@/lib/eventMeta";
 import Timeline from "./Timeline";
@@ -30,6 +30,9 @@ interface Props {
 
 interface RenderState {
   status: "idle" | "running" | "done" | "error";
+  stageLabel?: string;
+  percent?: number;
+  elapsedMs?: number;
   message?: string;
   command?: string;
   applied?: string[];
@@ -53,6 +56,14 @@ export default function ResultsPanel({
   onToast,
 }: Props) {
   const [render, setRender] = useState<RenderState>({ status: "idle" });
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // 언마운트 시 폴링 정리
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, []);
 
   if (!plan) {
     return (
@@ -92,6 +103,44 @@ export default function ResultsPanel({
     onToast("edit-plan.json 다운로드 완료");
   }
 
+  function stopPolling() {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }
+
+  /** jobId 를 주기적으로 폴링해 진행 상태를 갱신한다. */
+  function startPolling(jobId: string) {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/render?jobId=${jobId}`);
+        const data = await res.json();
+        if (!res.ok || !data.job) return;
+        const j = data.job;
+        setRender({
+          status:
+            j.status === "done" ? "done" : j.status === "error" ? "error" : "running",
+          stageLabel: j.stageLabel,
+          percent: j.percent,
+          elapsedMs: j.elapsedMs,
+          message: j.message,
+          command: j.command,
+          applied: j.applied,
+          downloadUrl: j.downloadUrl,
+          outputPath: j.outputPath,
+        });
+        if (j.status === "done" || j.status === "error") {
+          stopPolling();
+          onToast(j.status === "done" ? "렌더링 완료 🎉" : j.message || "렌더링 실패");
+        }
+      } catch {
+        // 일시적 폴링 오류는 무시(다음 틱에 재시도)
+      }
+    }, 1000);
+  }
+
   async function runRender() {
     if (!plan) return;
     // 로컬 실제 렌더링은 서버 저장 원본이 필요. 서버리스는 명령어만 받으므로 savedPath 불필요.
@@ -99,7 +148,7 @@ export default function ResultsPanel({
       onToast("서버에 저장된 원본이 없어 렌더링할 수 없습니다");
       return;
     }
-    setRender({ status: "running" });
+    setRender({ status: "running", stageLabel: "요청 전송 중", percent: 0 });
     try {
       const res = await fetch("/api/render", {
         method: "POST",
@@ -108,6 +157,15 @@ export default function ResultsPanel({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "렌더링 요청 실패");
+
+      if (data.async && data.jobId) {
+        // 백그라운드 렌더 시작 → 폴링
+        setRender({ status: "running", stageLabel: "렌더링 준비 중", percent: 0 });
+        startPolling(data.jobId);
+        return;
+      }
+
+      // 동기 응답(서버리스 명령 / 원본 없음)
       setRender({
         status: data.rendered ? "done" : "error",
         message: data.message,
@@ -126,6 +184,7 @@ export default function ResultsPanel({
   // 로컬인데 ffmpeg 미설치 → 실제 렌더 불가(명령/다운로드만 안내)
   const canRenderLocally = !serverless && ffmpegAvailable;
   const s = plan.stats;
+  const longVideo = s.originalDurationSec >= 600; // 10분 이상
 
   return (
     <div className="card full-span" id="results">
@@ -206,11 +265,34 @@ export default function ResultsPanel({
         </div>
       </div>
 
-      {/* 렌더링 진행 중 안내 */}
+      {/* 긴 영상 안내(10분 이상) */}
+      {longVideo && !rendering && canRenderLocally && (
+        <div className="notice warn">
+          ⏱ 원본이 <b>{fmtDur(s.originalDurationSec)}</b>로 깁니다. 10분 이상 영상은
+          렌더링에 수 분~수십 분 걸릴 수 있어요. 진행 상태가 아래에 표시됩니다.
+        </div>
+      )}
+
+      {/* 렌더링 진행 중 — 단계 · 진행률 · 소요시간 */}
       {rendering && (
         <div className="notice">
-          <b>⏳ 렌더링 중…</b> ffmpeg 로 1080p mp4 를 생성하고 있습니다. 긴 영상은 수 분
-          이상 걸릴 수 있어요. 창을 닫지 말고 잠시 기다려 주세요.
+          <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+            <span>⏳ {render.stageLabel || "렌더링 중"}</span>
+            <span style={{ color: "var(--text-mute)", fontWeight: 500 }}>
+              {typeof render.percent === "number" ? `${render.percent}%` : ""}
+              {render.elapsedMs ? ` · ${Math.round(render.elapsedMs / 1000)}초` : ""}
+            </span>
+          </div>
+          <div className="progress-track">
+            <div
+              className="progress-fill"
+              style={{ width: `${Math.max(3, render.percent ?? 3)}%` }}
+            />
+          </div>
+          <div style={{ fontSize: 12, color: "var(--text-mute)", marginTop: 6 }}>
+            단계: 렌더링 준비 → 입력·자막 준비 → ffmpeg 실행(효과·자막) → 마무리 · 창을
+            닫아도 서버에서 계속 진행됩니다.
+          </div>
         </div>
       )}
 

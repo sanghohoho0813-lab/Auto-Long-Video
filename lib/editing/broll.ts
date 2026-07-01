@@ -33,23 +33,37 @@ export function buildBrollEvents(
   if (!settings.broll.enabled || durationSec <= 0) return [];
 
   const { intervalSec, clipDurationSec } = settings.broll;
+  // 너무 짧은 간격으로 몰리지 않게 최소 간격을 강제(클립 길이 + 여유, 최소 15초)
+  const minGap = Math.max(15, clipDurationSec + 8);
+  const step = Math.max(intervalSec, minGap);
+
   const events: EditEvent[] = [];
 
   // 카테고리별로 사용 가능한 클립을 묶어두고 라운드로빈으로 소진
   const pool = groupByCategory(availableBroll);
   const usageCursor: Partial<Record<BrollCategory, number>> = {};
 
-  let t = intervalSec;
+  // 최근 사용한 대표 카테고리(같은 게 반복되지 않게 회피)
+  const recent: BrollCategory[] = [];
+  const RECENT_WINDOW = 2;
+
+  let t = step;
   while (t + clipDurationSec < durationSec) {
     const seg = segmentAt(segments, t);
     const text = seg?.text ?? "";
     const { categories, matchedKeyword } = matchBrollCategories(text);
 
-    const suggestedFile = pickFile(pool, usageCursor, categories);
+    // 최근 사용 카테고리를 뒤로 미뤄 다양성 확보(가능하면 회피)
+    const ordered = reorderAvoidingRecent(categories, recent);
+    const chosenCategory = ordered[0];
+    recent.push(chosenCategory);
+    if (recent.length > RECENT_WINDOW) recent.shift();
+
+    const suggestedFile = pickFile(pool, usageCursor, ordered);
 
     const reason = matchedKeyword
-      ? `"${matchedKeyword}" 언급 → ${categories.join(", ")}`
-      : `기본 카테고리 → ${categories.join(", ")}`;
+      ? `"${matchedKeyword}" 언급 → ${ordered.join(", ")}`
+      : `기본 카테고리 → ${ordered.join(", ")}`;
 
     events.push({
       id: makeId("broll"),
@@ -58,13 +72,36 @@ export function buildBrollEvents(
       end: round(t + clipDurationSec),
       label: suggestedFile
         ? `B-roll 삽입: ${round(t)}s (${suggestedFile})`
-        : `B-roll 후보: ${round(t)}s (${categories.join("/")})`,
-      payload: { categories, suggestedFile, reason },
+        : `B-roll 후보: ${round(t)}s (${ordered.join("/")})`,
+      payload: {
+        categories: ordered,
+        suggestedFile,
+        matchedKeyword,
+        reason,
+      },
     });
 
-    t += intervalSec;
+    t += step;
   }
   return events;
+}
+
+/**
+ * 최근 사용한 카테고리를 뒤로 미뤄 연속 반복을 피한다.
+ * 후보가 모두 최근에 쓰였으면(잠금 상태) 가장 오래전에 쓴 것부터 배치해 회전시킨다.
+ * (recent 는 oldest→newest 순서)
+ */
+function reorderAvoidingRecent(
+  categories: BrollCategory[],
+  recent: BrollCategory[],
+): BrollCategory[] {
+  if (categories.length <= 1) return categories;
+  const fresh = categories.filter((c) => !recent.includes(c));
+  const used = categories
+    .filter((c) => recent.includes(c))
+    // 가장 오래전에 사용한 카테고리를 앞으로(least-recently-used 우선)
+    .sort((a, b) => recent.indexOf(a) - recent.indexOf(b));
+  return [...fresh, ...used];
 }
 
 function groupByCategory(assets: BrollAsset[]): Partial<Record<BrollCategory, string[]>> {
@@ -92,14 +129,20 @@ function pickFile(
   return undefined;
 }
 
-/** 특정 시각 t 에 재생 중인 transcript 구간을 찾는다. */
+/**
+ * 특정 시각 t 에 재생 중인 transcript 구간을 찾는다.
+ * 경계(앞 구간 end == 뒤 구간 start)에서는 "지금 말하고 있는" 뒤 구간을 택하도록
+ * 반열림 구간[start, end) 으로 매칭한다.
+ */
 function segmentAt(
   segments: TranscriptSegment[],
   t: number,
 ): TranscriptSegment | undefined {
   return (
+    segments.find((s) => t >= s.start && t < s.end) ??
+    // 마지막 구간의 끝점 등은 <= 로 한 번 더 확인
     segments.find((s) => t >= s.start && t <= s.end) ??
-    // 정확히 걸치는 게 없으면 가장 가까운 이전 구간
+    // 그래도 없으면 가장 가까운 이전 구간
     [...segments].reverse().find((s) => s.start <= t)
   );
 }

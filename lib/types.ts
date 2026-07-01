@@ -102,7 +102,9 @@ export type BrollCategory =
   | "document"
   | "tax"
   | "government"
-  | "business_owner";
+  | "business_owner"
+  | "warning"
+  | "checklist";
 
 /**
  * 하나의 편집 이벤트.
