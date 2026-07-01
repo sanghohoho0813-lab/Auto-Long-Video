@@ -17,6 +17,7 @@ import type { BrollAsset } from "@/lib/editing/broll";
 import Uploader from "@/components/Uploader";
 import SettingsPanel from "@/components/SettingsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
+import HelpPanel from "@/components/HelpPanel";
 
 interface RuntimeState extends RuntimeInfo {
   ffmpeg: boolean;
@@ -68,6 +69,9 @@ export default function Home() {
     });
   }, [segments, settings, meta, broll]);
 
+  // 영상 없이 transcript(샘플 포함)만으로 만든 계획인지
+  const sampleMode = segments.length > 0 && !meta;
+
   return (
     <main className="page">
       <div className="header">
@@ -107,15 +111,20 @@ export default function Home() {
           plan={plan}
           savedPath={savedPath}
           serverless={env?.serverless ?? false}
+          sampleMode={sampleMode}
           onToast={setToast}
         />
       </div>
 
       {broll.length > 0 && (
-        <div className="notice" style={{ maxWidth: 1120 }}>
+        <div className="notice" style={{ maxWidth: 1120, marginTop: 16 }}>
           🎞 B-roll {broll.length}개 감지됨 · 카테고리별로 자동 매칭됩니다.
         </div>
       )}
+
+      <div style={{ marginTop: 20 }}>
+        <HelpPanel serverless={env?.serverless ?? false} />
+      </div>
 
       {toast && <div className="toast">{toast}</div>}
     </main>

@@ -82,7 +82,11 @@ export default function Uploader({
     }
   }
 
-  /** public/sample-transcript.json 을 불러와 바로 체험할 수 있게 한다. */
+  /**
+   * public/sample-transcript.json 을 불러와 바로 편집 계획을 생성한다.
+   * (segments 가 설정되면 상위에서 edit-plan 이 자동 생성됨)
+   * 생성 직후 결과 영역으로 부드럽게 스크롤해 다음 행동을 명확히 안내한다.
+   */
   async function loadSample() {
     try {
       const res = await fetch("/sample-transcript.json");
@@ -90,7 +94,13 @@ export default function Uploader({
       const json = await res.json();
       const parsed = parseTranscript(json);
       onTranscript(parsed.segments);
-      onToast(`샘플 자막 ${parsed.segments.length}개 구간 로드`);
+      onToast(`샘플로 편집 계획 생성 (${parsed.segments.length}개 구간)`);
+      // 결과가 렌더된 뒤 스크롤
+      setTimeout(() => {
+        document
+          .getElementById("results")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
     } catch (err) {
       onToast(`샘플 로드 실패: ${(err as Error).message}`);
     }
@@ -144,9 +154,11 @@ export default function Uploader({
           <>
             <div className="dropzone-icon">⬆️</div>
             <div className="dropzone-label">
-              {uploading ? "업로드 중…" : "mp4 영상을 선택하세요"}
+              {uploading ? "업로드 중…" : "mp4 영상 업로드 (선택)"}
             </div>
-            <div className="dropzone-hint">클릭해서 원본 강의 영상을 올려주세요</div>
+            <div className="dropzone-hint">
+              영상 메타 분석 · 렌더 명령용 · 없어도 편집 계획 미리보기 가능
+            </div>
           </>
         )}
       </div>
@@ -188,9 +200,12 @@ export default function Uploader({
           className="hidden-input"
           onChange={(e) => e.target.files?.[0] && handleTranscript(e.target.files[0])}
         />
-        <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={loadSample}>
-          ⚡ 샘플 자막으로 바로 체험하기
+        <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={loadSample}>
+          ⚡ 샘플로 편집 계획 생성
         </button>
+        <div className="dropzone-hint" style={{ textAlign: "center", marginTop: 6 }}>
+          영상 없이도 바로 편집 계획을 미리볼 수 있어요
+        </div>
       </div>
 
       <div className="notice">

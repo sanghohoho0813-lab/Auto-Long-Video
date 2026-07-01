@@ -21,19 +21,49 @@ interface Props {
   plan: EditPlan | null;
   savedPath: string | null;
   serverless: boolean;
+  /** 영상 없이 transcript(샘플 포함)만으로 만든 계획인지 */
+  sampleMode: boolean;
   onToast: (msg: string) => void;
 }
 
-export default function ResultsPanel({ plan, savedPath, serverless, onToast }: Props) {
+const EMPTY_STEPS = [
+  "왼쪽에서 transcript.json 업로드 또는 “샘플로 편집 계획 생성” 클릭",
+  "가운데에서 편집 강도 프리셋 · 세부 설정 선택",
+  "여기에 편집 계획(타임라인 · 편집 리스트)이 자동 생성",
+  "edit-plan.json 다운로드 → 로컬/워커에서 실제 렌더링",
+];
+
+export default function ResultsPanel({
+  plan,
+  savedPath,
+  serverless,
+  sampleMode,
+  onToast,
+}: Props) {
   const [rendering, setRendering] = useState(false);
   const [renderMsg, setRenderMsg] = useState<{ text: string; cmd?: string } | null>(null);
 
   if (!plan) {
     return (
-      <div className="card full-span">
+      <div className="card full-span" id="results">
+        <div className="card-head">
+          <span className="card-step">3</span>
+          <span className="card-title">편집 결과 미리보기</span>
+        </div>
         <div className="empty">
           <div className="empty-emoji">🎬</div>
-          <div>영상과 transcript.json 을 올리면 편집 계획이 여기에 생성됩니다.</div>
+          <div style={{ marginBottom: 16, fontWeight: 600 }}>
+            아직 편집 계획이 없습니다. 영상 없이 <b>transcript 만으로도</b> 바로
+            미리볼 수 있어요.
+          </div>
+          <ol className="workflow" style={{ maxWidth: 520, margin: "0 auto", textAlign: "left" }}>
+            {EMPTY_STEPS.map((t, i) => (
+              <li key={i} className="workflow-step">
+                <span className="workflow-num">{i + 1}</span>
+                <span>{t}</span>
+              </li>
+            ))}
+          </ol>
         </div>
       </div>
     );
@@ -81,11 +111,20 @@ export default function ResultsPanel({ plan, savedPath, serverless, onToast }: P
   const s = plan.stats;
 
   return (
-    <div className="card full-span">
+    <div className="card full-span" id="results">
       <div className="card-head">
         <span className="card-step">3</span>
         <span className="card-title">편집 결과 미리보기</span>
+        {sampleMode && <span className="sample-badge">🧪 샘플 모드 · 영상 메타 없음</span>}
       </div>
+
+      {sampleMode && (
+        <div className="notice" style={{ marginTop: -4, marginBottom: 14 }}>
+          영상 없이 transcript 만으로 만든 미리보기입니다. 길이·해상도 등 영상 메타는
+          비어 있으며, 실제 영상 기반 메타 분석과 렌더 명령을 쓰려면 왼쪽에서 mp4 를
+          업로드하세요.
+        </div>
+      )}
 
       {/* 요약 통계 */}
       <div className="stat-row">
@@ -114,22 +153,36 @@ export default function ResultsPanel({ plan, savedPath, serverless, onToast }: P
       </div>
       <EditList plan={plan} />
 
-      {/* 최종 출력 */}
+      {/* 최종 출력 — CTA 구분:
+          · 다운로드: transcript(샘플)만 있어도 항상 가능
+          · 렌더/명령: 영상(로컬 저장) 또는 서버리스 명령 생성 */}
       <div className="btn-row">
-        <button className="btn btn-ghost" onClick={downloadPlan}>
-          ⬇️ edit-plan.json 다운로드
-        </button>
-        <button
-          className="btn btn-primary"
-          onClick={render}
-          disabled={rendering || (!serverless && !savedPath)}
-        >
-          {rendering
-            ? "처리 중…"
-            : serverless
-              ? "🧾 ffmpeg 명령 보기"
-              : "🎬 1080p 렌더링"}
-        </button>
+        <div className="cta">
+          <button className="btn btn-ghost" onClick={downloadPlan}>
+            ⬇️ edit-plan.json 다운로드
+          </button>
+          <span className="cta-hint">transcript만 있어도 가능</span>
+        </div>
+        <div className="cta">
+          <button
+            className="btn btn-primary"
+            onClick={render}
+            disabled={rendering || (!serverless && !savedPath)}
+          >
+            {rendering
+              ? "처리 중…"
+              : serverless
+                ? "🧾 렌더 명령(ffmpeg) 생성"
+                : "🎬 1080p 렌더링"}
+          </button>
+          <span className="cta-hint">
+            {serverless
+              ? "edit-plan 기반 명령 — 실제 렌더는 로컬/워커"
+              : savedPath
+                ? "서버 저장된 영상으로 렌더"
+                : "영상 서버 저장이 필요"}
+          </span>
+        </div>
       </div>
 
       {serverless ? (
