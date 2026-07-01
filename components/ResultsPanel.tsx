@@ -21,9 +21,20 @@ interface Props {
   plan: EditPlan | null;
   savedPath: string | null;
   serverless: boolean;
+  /** 로컬 환경에서 ffmpeg 설치 여부 */
+  ffmpegAvailable: boolean;
   /** 영상 없이 transcript(샘플 포함)만으로 만든 계획인지 */
   sampleMode: boolean;
   onToast: (msg: string) => void;
+}
+
+interface RenderState {
+  status: "idle" | "running" | "done" | "error";
+  message?: string;
+  command?: string;
+  applied?: string[];
+  downloadUrl?: string;
+  outputPath?: string;
 }
 
 const EMPTY_STEPS = [
@@ -37,11 +48,11 @@ export default function ResultsPanel({
   plan,
   savedPath,
   serverless,
+  ffmpegAvailable,
   sampleMode,
   onToast,
 }: Props) {
-  const [rendering, setRendering] = useState(false);
-  const [renderMsg, setRenderMsg] = useState<{ text: string; cmd?: string } | null>(null);
+  const [render, setRender] = useState<RenderState>({ status: "idle" });
 
   if (!plan) {
     return (
@@ -81,16 +92,14 @@ export default function ResultsPanel({
     onToast("edit-plan.json 다운로드 완료");
   }
 
-  async function render() {
+  async function runRender() {
     if (!plan) return;
-    // 로컬에서 실제 렌더링은 서버 저장 원본이 필요하지만,
-    // 서버리스에서는 명령어 안내만 받으므로 savedPath 없이도 호출한다.
+    // 로컬 실제 렌더링은 서버 저장 원본이 필요. 서버리스는 명령어만 받으므로 savedPath 불필요.
     if (!serverless && !savedPath) {
       onToast("서버에 저장된 원본이 없어 렌더링할 수 없습니다");
       return;
     }
-    setRendering(true);
-    setRenderMsg(null);
+    setRender({ status: "running" });
     try {
       const res = await fetch("/api/render", {
         method: "POST",
@@ -98,16 +107,24 @@ export default function ResultsPanel({
         body: JSON.stringify({ plan, inputPath: savedPath ?? undefined }),
       });
       const data = await res.json();
-      setRenderMsg({ text: data.message || "완료", cmd: data.command });
-      if (data.outputPath) onToast(`렌더링 완료: ${data.outputPath}`);
-      else onToast(data.message || "요청 처리됨");
+      if (!res.ok) throw new Error(data.error || "렌더링 요청 실패");
+      setRender({
+        status: data.rendered ? "done" : "error",
+        message: data.message,
+        command: data.command,
+        applied: data.applied,
+        downloadUrl: data.downloadUrl,
+        outputPath: data.outputPath,
+      });
+      onToast(data.rendered ? "렌더링 완료 🎉" : data.message || "요청 처리됨");
     } catch (err) {
-      setRenderMsg({ text: `요청 실패: ${(err as Error).message}` });
-    } finally {
-      setRendering(false);
+      setRender({ status: "error", message: `요청 실패: ${(err as Error).message}` });
     }
   }
 
+  const rendering = render.status === "running";
+  // 로컬인데 ffmpeg 미설치 → 실제 렌더 불가(명령/다운로드만 안내)
+  const canRenderLocally = !serverless && ffmpegAvailable;
   const s = plan.stats;
 
   return (
@@ -166,44 +183,83 @@ export default function ResultsPanel({
         <div className="cta">
           <button
             className="btn btn-primary"
-            onClick={render}
+            onClick={runRender}
             disabled={rendering || (!serverless && !savedPath)}
           >
             {rendering
-              ? "처리 중…"
+              ? "⏳ 렌더링 중…"
               : serverless
-                ? "🧾 렌더 명령(ffmpeg) 생성"
-                : "🎬 1080p 렌더링"}
+                ? "🧾 ffmpeg 명령 보기"
+                : canRenderLocally
+                  ? "🎬 실제 렌더링 시작"
+                  : "🧾 ffmpeg 명령 보기"}
           </button>
           <span className="cta-hint">
             {serverless
               ? "edit-plan 기반 명령 — 실제 렌더는 로컬/워커"
-              : savedPath
-                ? "서버 저장된 영상으로 렌더"
-                : "영상 서버 저장이 필요"}
+              : !savedPath
+                ? "영상 서버 저장이 필요"
+                : canRenderLocally
+                  ? "1080p mp4 로 실제 렌더링"
+                  : "ffmpeg 미설치 — 명령만 확인"}
           </span>
         </div>
       </div>
 
+      {/* 렌더링 진행 중 안내 */}
+      {rendering && (
+        <div className="notice">
+          <b>⏳ 렌더링 중…</b> ffmpeg 로 1080p mp4 를 생성하고 있습니다. 긴 영상은 수 분
+          이상 걸릴 수 있어요. 창을 닫지 말고 잠시 기다려 주세요.
+        </div>
+      )}
+
+      {/* 환경/상태별 안내 */}
       {serverless ? (
         <div className="notice warn">
-          ☁️ Vercel 환경에서는 실제 영상 렌더링을 지원하지 않습니다. 위 버튼은
-          로컬/워커에서 실행할 <b>ffmpeg 명령어</b>만 보여줍니다. edit-plan.json 을
-          내려받아 로컬 ffmpeg 로 렌더링하세요.
+          ☁️ Vercel 환경에서는 실제 영상 렌더링을 지원하지 않습니다. 버튼은 로컬/워커에서
+          실행할 <b>ffmpeg 명령어</b>만 보여줍니다. edit-plan.json 을 내려받아 로컬
+          ffmpeg 로 렌더링하세요.
+        </div>
+      ) : !ffmpegAvailable ? (
+        <div className="notice warn">
+          🛠 이 서버에 <b>ffmpeg 가 설치되어 있지 않습니다.</b> 실제 렌더링 대신
+          명령어만 확인할 수 있어요. <code style={{ display: "inline", padding: "2px 6px" }}>brew install ffmpeg</code>{" "}
+          또는 <code style={{ display: "inline", padding: "2px 6px" }}>apt install ffmpeg</code> 설치 후 다시 시도하세요.
         </div>
       ) : (
         !savedPath && (
           <div className="notice warn">
-            렌더링은 서버에 저장된 원본이 필요합니다. (ffprobe/ffmpeg 미설치 환경에서는
-            edit-plan.json 다운로드 후 별도 렌더 파이프라인에서 사용하세요.)
+            실제 렌더링은 서버에 저장된 원본이 필요합니다. 왼쪽에서 mp4 를 업로드하세요.
           </div>
         )
       )}
 
-      {renderMsg && (
-        <div className="notice">
-          {renderMsg.text}
-          {renderMsg.cmd && <code>{renderMsg.cmd}</code>}
+      {/* 렌더 결과 */}
+      {render.status === "done" && (
+        <div className="notice ok">
+          <b>✅ {render.message || "렌더링 완료"}</b>
+          {render.applied && render.applied.length > 0 && (
+            <div style={{ marginTop: 6, color: "var(--text-sub)" }}>
+              적용: {render.applied.join(" · ")}
+            </div>
+          )}
+          {render.downloadUrl && (
+            <a
+              className="btn btn-primary"
+              style={{ marginTop: 12, textDecoration: "none" }}
+              href={render.downloadUrl}
+            >
+              ⬇️ 결과 mp4 다운로드
+            </a>
+          )}
+        </div>
+      )}
+
+      {render.status === "error" && (
+        <div className="notice warn">
+          <b>{render.message || "요청 처리됨"}</b>
+          {render.command && <code>{render.command}</code>}
         </div>
       )}
     </div>

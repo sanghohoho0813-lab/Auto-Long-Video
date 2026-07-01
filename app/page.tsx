@@ -111,6 +111,7 @@ export default function Home() {
           plan={plan}
           savedPath={savedPath}
           serverless={env?.serverless ?? false}
+          ffmpegAvailable={env?.ffmpeg ?? false}
           sampleMode={sampleMode}
           onToast={setToast}
         />

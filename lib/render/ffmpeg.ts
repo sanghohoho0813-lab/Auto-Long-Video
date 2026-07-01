@@ -1,19 +1,23 @@
 /**
- * ffmpeg 렌더링 기본 구조 (2단계에서 실제 렌더링을 붙일 자리)
+ * ffmpeg 렌더링 (2단계: 실제 렌더 구현)
  *
- * 현재는 EditPlan → ffmpeg 필터그래프/명령어로 "번역"하는 뼈대를 제공한다.
- * MVP 에서는 아래를 구현한다:
+ * EditPlan → ffmpeg filter_complex 로 번역해 실제 1080p mp4 를 렌더링한다.
  *   - 영상 메타데이터 추출 (ffprobe)
- *   - 무음 감지 (silencedetect)
- *   - EditPlan 을 바탕으로 한 filter_complex 초안 생성
- *   - 실제 렌더 실행 (renderPlan) — ffmpeg 미설치 시 명령어만 반환
+ *   - 무음 감지 (silencedetect) — 향후 정밀 컷용
+ *   - EditPlan → filter_complex (컷/줌/스포트라이트/B-roll/자막·팝업)
+ *   - 실제 렌더 실행 (renderPlan) — ffmpeg 미설치/서버리스면 명령어만 반환
  *
- * 자막/줌/스포트라이트/B-roll/팝업을 완전한 필터그래프로 변환하는 것은
- * 2단계 작업이며, 여기서는 확장 포인트를 명확히 남겨둔다.
+ * ⚠️ 실제 실행 여부는 호출부(/api/render)가 환경(로컬/서버리스)으로 판단한다.
+ *    이 모듈은 "명령 생성"과 "실행"을 분리해 제공한다.
  */
 
 import { spawn } from "node:child_process";
+import { writeFile, access } from "node:fs/promises";
+import path from "node:path";
 import type { EditPlan, VideoMeta } from "@/lib/types";
+import { computeKeepRanges, buildRemapper, remapEvents } from "@/lib/render/timeline";
+import { buildAss } from "@/lib/render/ass";
+import { buildFilterComplex, type BrollInput } from "@/lib/render/filtergraph";
 
 export interface FfmpegAvailability {
   ffmpeg: boolean;
@@ -60,7 +64,28 @@ export async function probeVideo(filePath: string): Promise<VideoMeta> {
   };
 }
 
-/** silencedetect 로 무음 구간을 감지한다(정확한 컷 편집용). */
+/** 오디오 스트림 존재 여부 */
+export async function probeHasAudio(filePath: string): Promise<boolean> {
+  try {
+    const { stdout } = await run("ffprobe", [
+      "-v",
+      "error",
+      "-select_streams",
+      "a:0",
+      "-show_entries",
+      "stream=index",
+      "-of",
+      "json",
+      filePath,
+    ]);
+    const parsed = JSON.parse(stdout) as { streams?: unknown[] };
+    return (parsed.streams?.length ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** silencedetect 로 무음 구간을 감지한다(정밀 컷용, 향후 연동). */
 export async function detectSilence(
   filePath: string,
   noiseDb: number,
@@ -79,36 +104,105 @@ export async function detectSilence(
   return parseSilenceLog(stderr);
 }
 
-/**
- * EditPlan → ffmpeg 명령어(초안).
- * 11. 최종 출력: 1080p, 원본 비율 유지, 유튜브 롱폼 품질.
- *
- * 지금은 컷 편집 + 1080p 스케일 + 인코딩 설정까지 실제로 구성하고,
- * 오버레이(자막/줌/스포트라이트/B-roll/팝업)는 필터 자리표시자로 남긴다.
- */
-export function buildFfmpegCommand(
-  plan: EditPlan,
-  inputPath: string,
-  outputPath: string,
-): { bin: string; args: string[]; note: string } {
-  const args: string[] = ["-y", "-i", inputPath];
+/* -------------------------- 렌더 구성(순수) -------------------------- */
 
-  // 컷 편집: 무음 구간을 제외한 나머지를 이어붙이는 select 필터
-  const keepRanges = cutToKeepRanges(plan);
-  const vf: string[] = [];
+export interface ComposeOptions {
+  hasAudio?: boolean;
+  /** broll suggestedFile → 실제 파일 절대경로(없으면 null). 미지정 시 B-roll 생략 */
+  resolveBrollFile?: (suggestedFile: string) => string | null;
+}
 
-  if (keepRanges.length > 0 && plan.settings.cut.enabled) {
-    const sel = keepRanges
-      .map((r) => `between(t,${r.start},${r.end})`)
-      .join("+");
-    vf.push(`select='${sel}',setpts=N/FRAME_RATE/TB`);
+export interface RenderComposition {
+  extraInputs: string[]; // broll 입력 파일(순서대로 -i)
+  filterComplex: string;
+  videoLabel: string;
+  audioLabel: string | null;
+  assFileName: string; // ffmpeg cwd(출력폴더) 기준 상대 파일명
+  assContent: string;
+  hasSubtitles: boolean;
+  outW: number;
+  outH: number;
+  fps: number;
+  applied: string[];
+}
+
+/** EditPlan → 렌더 구성요소(필터/자막/입력)로 번역한다(파일 시스템 접근 없음). */
+export function composeRender(plan: EditPlan, baseName: string, opts: ComposeOptions = {}): RenderComposition {
+  const hasAudio = opts.hasAudio ?? true;
+  const total = plan.stats.originalDurationSec || durationFromEvents(plan);
+
+  // 출력 해상도(원본 비율 유지, 세로 1080 기준)
+  const srcW = plan.source?.width || 1920;
+  const srcH = plan.source?.height || 1080;
+  const outH = 1080;
+  const outW = evenize(Math.round((srcW / srcH) * outH)) || 1920;
+  const fps = Math.round(plan.source?.fps || 30);
+
+  // 컷 → keep 구간 → 리맵
+  const keep = computeKeepRanges(plan.events, total);
+  const remap = buildRemapper(keep);
+  const remapped = remapEvents(plan.events, remap, keep);
+
+  // B-roll 입력 해석
+  const extraInputs: string[] = [];
+  const brollInputs: BrollInput[] = [];
+  if (opts.resolveBrollFile) {
+    for (const e of remapped.filter((x) => x.type === "broll")) {
+      const suggested = (e.payload as { suggestedFile?: string })?.suggestedFile;
+      if (!suggested) continue;
+      const file = opts.resolveBrollFile(suggested);
+      if (!file) continue;
+      brollInputs.push({ inputIndex: 1 + extraInputs.length, start: e.start, end: e.end });
+      extraInputs.push(file);
+    }
   }
 
-  // 1080p 스케일 (원본 비율 유지: 세로 1080 기준, 폭은 비율 유지 후 짝수 보정)
-  vf.push("scale=-2:1080:flags=lanczos");
+  // 자막(ASS) — 필터 파싱 안전을 위해 파일명은 ASCII 로 정규화
+  const ass = buildAss(remapped, plan.settings, outW, outH);
+  const assFileName = baseName.replace(/[^A-Za-z0-9._-]/g, "_") + ".ass";
 
-  args.push("-vf", vf.join(","));
-  // 유튜브 롱폼 업로드용 품질 프리셋
+  const filter = buildFilterComplex({
+    keepRanges: keep,
+    doCut: plan.settings.cut.enabled,
+    totalDuration: total,
+    remappedEvents: remapped,
+    settings: plan.settings,
+    outW,
+    outH,
+    fps,
+    hasAudio,
+    assFile: ass.hasEvents ? assFileName : null,
+    broll: brollInputs,
+  });
+
+  return {
+    extraInputs,
+    filterComplex: filter.filterComplex,
+    videoLabel: filter.videoLabel,
+    audioLabel: filter.audioLabel,
+    assFileName,
+    assContent: ass.content,
+    hasSubtitles: ass.hasEvents,
+    outW,
+    outH,
+    fps,
+    applied: filter.applied,
+  };
+}
+
+/** 렌더 구성 → ffmpeg 인자 배열 */
+export function buildFfmpegArgs(
+  comp: RenderComposition,
+  inputPath: string,
+  outputPath: string,
+): string[] {
+  const args = ["-y", "-i", inputPath];
+  for (const f of comp.extraInputs) args.push("-i", f);
+
+  args.push("-filter_complex", comp.filterComplex);
+  args.push("-map", comp.videoLabel);
+  if (comp.audioLabel) args.push("-map", comp.audioLabel);
+
   args.push(
     "-c:v",
     "libx264",
@@ -118,57 +212,98 @@ export function buildFfmpegCommand(
     "18",
     "-pix_fmt",
     "yuv420p",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "192k",
-    outputPath,
+    "-r",
+    String(comp.fps),
   );
+  if (comp.audioLabel) args.push("-c:a", "aac", "-b:a", "192k");
+  args.push("-movflags", "+faststart", outputPath);
+  return args;
+}
 
+/**
+ * EditPlan → ffmpeg 명령어(표시용).
+ * 11. 최종 출력: 1080p, 원본 비율 유지, 유튜브 롱폼 품질.
+ * (실행하지 않고 명령만 확인할 때 사용 — 서버리스/미설치)
+ */
+export function buildFfmpegCommand(
+  plan: EditPlan,
+  inputPath: string,
+  outputPath: string,
+): { bin: string; args: string[]; command: string; applied: string[]; note: string } {
+  const baseName = path.basename(outputPath, path.extname(outputPath));
+  const comp = composeRender(plan, baseName, { hasAudio: true });
+  const args = buildFfmpegArgs(comp, inputPath, outputPath);
   return {
     bin: "ffmpeg",
     args,
+    command: `ffmpeg ${args.map(shellQuote).join(" ")}`,
+    applied: comp.applied,
     note:
-      "MVP 렌더: 무음 컷 + 1080p 인코딩까지 반영. 자막/줌/스포트라이트/B-roll/팝업 " +
-      "오버레이는 2단계에서 filter_complex 로 확장 예정.",
+      comp.hasSubtitles
+        ? `자막은 렌더 시 '${comp.assFileName}' (ASS) 파일로 함께 생성됩니다. 출력 폴더에서 실행하세요.`
+        : "자막 이벤트가 없어 ASS 파일은 생성되지 않습니다.",
   };
 }
+
+/* -------------------------- 실제 렌더 실행 -------------------------- */
 
 export interface RenderResult {
   ok: boolean;
   command: string;
   outputPath: string;
+  applied: string[];
   message: string;
 }
 
-/** 실제 렌더 실행. ffmpeg 미설치면 명령어만 돌려준다(계획 검증용). */
+/**
+ * 실제 렌더 실행(로컬 전용).
+ * outputDir 에 ASS 사이드카를 쓰고, 그 폴더를 cwd 로 ffmpeg 를 실행한다.
+ */
 export async function renderPlan(
   plan: EditPlan,
   inputPath: string,
   outputPath: string,
+  options: { resolveBrollFile?: (f: string) => string | null } = {},
 ): Promise<RenderResult> {
-  const { bin, args } = buildFfmpegCommand(plan, inputPath, outputPath);
-  const command = `${bin} ${args.join(" ")}`;
+  const outputDir = path.dirname(outputPath);
+  const baseName = path.basename(outputPath, path.extname(outputPath));
 
   const { ffmpeg } = await checkFfmpeg();
   if (!ffmpeg) {
+    const cmd = buildFfmpegCommand(plan, inputPath, outputPath);
     return {
       ok: false,
-      command,
+      command: cmd.command,
       outputPath,
+      applied: cmd.applied,
       message:
         "ffmpeg 가 설치되어 있지 않아 실제 렌더링을 건너뜁니다. 아래 명령어로 수동 실행할 수 있습니다.",
     };
   }
 
+  const hasAudio = await probeHasAudio(inputPath);
+  const comp = composeRender(plan, baseName, {
+    hasAudio,
+    resolveBrollFile: options.resolveBrollFile,
+  });
+
+  // ASS 사이드카 작성 (cwd = outputDir 이므로 상대 파일명으로 참조됨)
+  if (comp.hasSubtitles) {
+    await writeFile(path.join(outputDir, comp.assFileName), comp.assContent, "utf8");
+  }
+
+  const args = buildFfmpegArgs(comp, inputPath, outputPath);
+  const command = `ffmpeg ${args.map(shellQuote).join(" ")}`;
+
   try {
-    await run(bin, args, { timeoutMs: 1000 * 60 * 30 });
-    return { ok: true, command, outputPath, message: "렌더링 완료" };
+    await run("ffmpeg", args, { timeoutMs: 1000 * 60 * 30, cwd: outputDir });
+    return { ok: true, command, outputPath, applied: comp.applied, message: "렌더링 완료" };
   } catch (err) {
     return {
       ok: false,
       command,
       outputPath,
+      applied: comp.applied,
       message: `렌더링 실패: ${(err as Error).message}`,
     };
   }
@@ -176,22 +311,18 @@ export async function renderPlan(
 
 /* --------------------------- 내부 유틸 --------------------------- */
 
-/** 컷 이벤트를 "남길 구간"으로 변환 */
-function cutToKeepRanges(plan: EditPlan): Array<{ start: number; end: number }> {
-  const total = plan.stats.originalDurationSec;
-  const cuts = plan.events
-    .filter((e) => e.type === "cut")
-    .sort((a, b) => a.start - b.start);
-  if (cuts.length === 0) return [{ start: 0, end: total }];
+function durationFromEvents(plan: EditPlan): number {
+  return plan.events.reduce((max, e) => Math.max(max, e.end), 0);
+}
 
-  const keep: Array<{ start: number; end: number }> = [];
-  let cursor = 0;
-  for (const c of cuts) {
-    if (c.start > cursor) keep.push({ start: cursor, end: c.start });
-    cursor = Math.max(cursor, c.end);
-  }
-  if (cursor < total) keep.push({ start: cursor, end: total });
-  return keep;
+function evenize(n: number): number {
+  return n % 2 === 0 ? n : n + 1;
+}
+
+/** 표시용 안전 인용(실행은 spawn 배열로 하므로 셸 이스케이프 불필요) */
+function shellQuote(arg: string): string {
+  if (/^[A-Za-z0-9_./:=-]+$/.test(arg)) return arg;
+  return `'${arg.replace(/'/g, "'\\''")}'`;
 }
 
 function parseFps(r?: string): number | undefined {
@@ -227,10 +358,10 @@ function hasBinary(bin: string): Promise<boolean> {
 function run(
   bin: string,
   args: string[],
-  opts: { timeoutMs?: number } = {},
+  opts: { timeoutMs?: number; cwd?: string } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const p = spawn(bin, args);
+    const p = spawn(bin, args, { cwd: opts.cwd });
     let stdout = "";
     let stderr = "";
     const timer = opts.timeoutMs
@@ -248,9 +379,8 @@ function run(
     });
     p.on("close", (code) => {
       if (timer) clearTimeout(timer);
-      // ffmpeg 는 정보 출력을 stderr 로 내보내므로 code 만 본다.
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${bin} 종료 코드 ${code}: ${stderr.slice(-500)}`));
+      else reject(new Error(`${bin} 종료 코드 ${code}: ${stderr.slice(-800)}`));
     });
   });
 }

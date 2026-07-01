@@ -569,6 +569,12 @@ select {
   border-color: #ffe9a8;
 }
 
+.notice.ok {
+  background: #e9f9f1;
+  border-color: #b7ecd3;
+  color: var(--text);
+}
+
 .notice code {
   display: block;
   margin-top: 8px;

@@ -3,23 +3,30 @@
  *
  * EditPlan + 업로드된 원본 경로를 받아 ffmpeg 렌더링을 시도한다.
  *
- * - 로컬: ffmpeg 가 설치되어 있으면 실제 렌더, 없으면 명령어(초안) 반환
- * - 서버리스(Vercel): ffmpeg 실행을 시도하지 않고, 안내 + 명령어 + edit-plan 정보만 반환
+ * - 로컬: ffmpeg 가 설치되어 있으면 실제 렌더, 없으면 명령어 반환
+ * - 서버리스(Vercel): ffmpeg 실행을 시도하지 않고, 안내 + 명령어만 반환
  *
  * body: { plan: EditPlan, inputPath?: "uploads/xxx.mp4" }
  */
 
 import { NextResponse } from "next/server";
 import path from "node:path";
-import { access } from "node:fs/promises";
-import { STORAGE_ROOT, OUTPUT_DIR, ensureStorage, safeFileName } from "@/lib/storage";
+import { existsSync } from "node:fs";
+import { access as accessP } from "node:fs/promises";
+import {
+  STORAGE_ROOT,
+  OUTPUT_DIR,
+  BROLL_DIR,
+  ensureStorage,
+  safeFileName,
+} from "@/lib/storage";
 import { renderPlan, buildFfmpegCommand } from "@/lib/render/ffmpeg";
 import { isServerless } from "@/lib/env";
 import type { EditPlan } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 export async function POST(req: Request) {
   try {
@@ -31,7 +38,6 @@ export async function POST(req: Request) {
     }
 
     // 서버리스 환경: 실제 렌더링을 절대 시도하지 않는다.
-    // 파일 시스템/ffmpeg 에 손대지 않고 명령어와 안내만 돌려준다.
     if (isServerless()) {
       const inName = safeFileName(plan.source?.fileName || "input.mp4");
       const outName = `${path.basename(inName, path.extname(inName))}_edited.mp4`;
@@ -43,17 +49,15 @@ export async function POST(req: Request) {
         message:
           "Vercel(서버리스)에서는 실제 렌더링을 지원하지 않습니다. " +
           "edit-plan.json 을 내려받아 로컬 ffmpeg 또는 별도 렌더 워커에서 아래 명령으로 실행하세요.",
-        command: `${cmd.bin} ${cmd.args.join(" ")}`,
+        command: cmd.command,
+        applied: cmd.applied,
         note: cmd.note,
       });
     }
 
     const inputPath = body.inputPath;
     if (!inputPath) {
-      return NextResponse.json(
-        { error: "inputPath 가 필요합니다." },
-        { status: 400 },
-      );
+      return NextResponse.json({ error: "inputPath 가 필요합니다." }, { status: 400 });
     }
 
     await ensureStorage();
@@ -68,27 +72,35 @@ export async function POST(req: Request) {
     const outName = `${baseName}_edited.mp4`;
     const outPath = path.join(OUTPUT_DIR, outName);
 
-    // 입력 파일 존재 확인. 없으면 명령어 초안만 반환.
-    const inputExists = await exists(absInput);
-    if (!inputExists) {
+    // 입력 파일 존재 확인. 없으면 명령어만 반환.
+    if (!(await exists(absInput))) {
       const cmd = buildFfmpegCommand(plan, absInput, outPath);
       return NextResponse.json({
         ok: false,
         rendered: false,
-        message:
-          "원본 파일을 찾을 수 없어 렌더링을 건너뜁니다. 아래는 실행 예정 명령어입니다.",
-        command: `${cmd.bin} ${cmd.args.join(" ")}`,
+        message: "원본 파일을 찾을 수 없어 렌더링을 건너뜁니다. 아래는 실행 예정 명령어입니다.",
+        command: cmd.command,
+        applied: cmd.applied,
         note: cmd.note,
       });
     }
 
-    const result = await renderPlan(plan, absInput, outPath);
+    // B-roll 파일 해석: storage/broll/<category>/<file> 존재 시에만 사용
+    const resolveBrollFile = (suggested: string): string | null => {
+      const abs = path.join(BROLL_DIR, suggested);
+      if (!abs.startsWith(BROLL_DIR)) return null;
+      return existsSync(abs) ? abs : null;
+    };
+
+    const result = await renderPlan(plan, absInput, outPath, { resolveBrollFile });
     return NextResponse.json({
       ok: result.ok,
       rendered: result.ok,
       message: result.message,
       command: result.command,
+      applied: result.applied,
       outputPath: result.ok ? `output/${outName}` : undefined,
+      downloadUrl: result.ok ? `/api/download?file=${encodeURIComponent(`output/${outName}`)}` : undefined,
     });
   } catch (err) {
     return NextResponse.json(
@@ -98,11 +110,9 @@ export async function POST(req: Request) {
   }
 }
 
-async function exists(p: string): Promise<boolean> {
-  try {
-    await access(p);
-    return true;
-  } catch {
-    return false;
-  }
+function exists(p: string): Promise<boolean> {
+  return accessP(p).then(
+    () => true,
+    () => false,
+  );
 }

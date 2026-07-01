@@ -150,10 +150,24 @@ public/
 components/
 ├── Uploader.tsx            # 영상 · transcript 업로드
 ├── SettingsPanel.tsx       # 프리셋 + 세부 설정
-├── ResultsPanel.tsx        # 통계 · 다운로드 · 렌더
+├── ResultsPanel.tsx        # 통계 · 다운로드 · 실제 렌더/명령 · 결과 다운로드
+├── HelpPanel.tsx           # 워크플로우 + 환경(가능/제한) 안내
 ├── Timeline.tsx            # 타입별 편집 타임라인
 └── EditList.tsx            # 적용된 편집 리스트 (자막 강조 미리보기)
 ```
+
+### 렌더 파이프라인 (lib/render)
+
+```
+render/
+├── timeline.ts             # 컷 반영 후 이벤트 시각 리맵(오버레이 어긋남 방지)
+├── ass.ts                  # 자막(키워드 강조) + 팝업 → ASS 자막 파일 생성
+├── filtergraph.ts          # EditPlan → ffmpeg filter_complex
+├── ffmpeg.ts               # 구성/실행(probe·compose·args·renderPlan)
+└── whisper.ts              # Whisper 연동 인터페이스 (다음 단계)
+```
+
+비디오 필터 체인: **컷 → 1080p 스케일 → 줌 → 스포트라이트 → B-roll → 자막(ASS)**
 
 ### 편집 파이프라인
 
@@ -171,6 +185,33 @@ transcript + settings + videoMeta
 
 ---
 
+## 🎬 실제 ffmpeg 렌더링 (로컬)
+
+로컬 환경(ffmpeg 설치됨)에서는 edit-plan 을 실제 1080p mp4 로 렌더링합니다.
+`filter_complex` 로 아래 효과를 합성합니다.
+
+| 효과 | 구현 방식 |
+|------|-----------|
+| 컷 편집 | `trim` + `concat` 후 나머지 이벤트 시각을 출력 타임라인으로 **리맵** |
+| 1080p 스케일 | 원본 비율 유지(세로 1080 기준, 짝수 폭 보정) |
+| 줌 | `zoompan` — 구간마다 raised-cosine 로 1.0→Z→1.0 부드럽게 |
+| 스포트라이트 | `drawbox` 반투명 검정으로 전체 화면 살짝 어둡게(자막은 위에 밝게) |
+| 자막 + 키워드 강조 | **ASS** 자막 — 단어별 색상/굵기/크기(110~130%) 인라인 태그 |
+| 팝업 | ASS 상단 중앙 스타일(금액/경고/체크별 색상) |
+| B-roll | 클립을 입력으로 추가 → `overlay`(원본 오디오 유지) *(구조 준비, 파일 있으면 동작)* |
+
+**요구사항**: 로컬에 `ffmpeg` / `ffprobe` 설치. 한글 자막을 위해 한글 폰트(예:
+`fonts-nanum`, Noto Sans CJK) 권장. 미설치 시 UI 는 실제 렌더 대신 **ffmpeg 명령어만**
+보여줍니다.
+
+**흐름**: `실제 렌더링 시작` → `/api/render`(로컬 실행) → `storage/output/<name>_edited.mp4`
+→ UI 의 **결과 mp4 다운로드**(`/api/download`).
+
+> ⚠️ Vercel(서버리스)에서는 실제 렌더링을 실행하지 않고 명령어만 반환합니다.
+> 긴 영상은 렌더링에 수 분 이상 걸릴 수 있습니다.
+
+---
+
 ## ✨ 구현된 기능 (MVP)
 
 | # | 기능 | 상태 |
@@ -185,16 +226,17 @@ transcript + settings + videoMeta
 | 8 | 팝업 텍스트 (금액/위험, 최소 간격 제한) | ✅ |
 | 9 | 편집 강도 프리셋 3종 | ✅ |
 | 10 | 결과 미리보기 (타임라인 + 편집 리스트) | ✅ |
-| 11 | edit-plan.json 다운로드 + 1080p 렌더 구조 | ✅ |
+| 11 | edit-plan.json 다운로드 + **실제 1080p 렌더링(로컬)** | ✅ |
 
 ---
 
 ## 🗺 로드맵
 
-- **1단계 (현재)**: 구조 · UI · 편집 계획 생성 · edit-plan.json · ffmpeg 렌더 기본 골격
-- **2단계**: ffmpeg `filter_complex` 로 자막/줌/스포트라이트/B-roll/팝업 실제 렌더링
+- **1단계**: 구조 · UI · 편집 계획 생성 · edit-plan.json · ffmpeg 렌더 기본 골격 ✅
+- **2단계 (현재)**: ffmpeg `filter_complex` 로 컷/자막·강조/줌/스포트라이트/팝업 **실제 렌더링** ✅
+  (B-roll 오버레이 구조 준비 · 로컬 전용 · Vercel 은 명령만 반환)
 - **3단계**: whisper.cpp / faster-whisper 자동 자막 (`lib/render/whisper.ts` 어댑터 구현)
-- **4단계**: B-roll 추천 알고리즘 고도화 (임베딩 기반 문맥 매칭)
+- **4단계**: B-roll 추천 알고리즘 고도화 (임베딩 기반 문맥 매칭) + 렌더 워커 분리(진행률 스트리밍)
 
 ---
 
