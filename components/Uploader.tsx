@@ -16,6 +16,7 @@ interface Props {
   meta: VideoMeta | null;
   savedPath: string | null;
   segments: TranscriptSegment[];
+  serverless: boolean;
   onVideo: (meta: VideoMeta, savedPath: string | null) => void;
   onTranscript: (segments: TranscriptSegment[]) => void;
   onToast: (msg: string) => void;
@@ -25,6 +26,7 @@ export default function Uploader({
   meta,
   savedPath,
   segments,
+  serverless,
   onVideo,
   onTranscript,
   onToast,
@@ -35,8 +37,21 @@ export default function Uploader({
 
   async function handleVideo(file: File) {
     setUploading(true);
-    // 브라우저에서 먼저 길이/해상도 추출 (ffprobe 미설치 대비)
+    // 브라우저에서 먼저 길이/해상도 추출 (ffprobe 미설치 / 서버리스 대비)
     const local = await readLocalVideoMeta(file).catch(() => null);
+
+    // 서버리스(Vercel): 서버 업로드를 시도하지 않고 브라우저 분석만 사용한다.
+    // (영구 저장 불가 + 요청 바디 제한 회피)
+    if (serverless) {
+      if (local) {
+        onVideo({ ...local, fileName: file.name, sizeBytes: file.size }, null);
+        onToast("영상 분석 완료 (브라우저 메모리)");
+      } else {
+        onToast("영상 메타데이터를 읽을 수 없습니다");
+      }
+      setUploading(false);
+      return;
+    }
 
     try {
       const fd = new FormData();
@@ -64,6 +79,20 @@ export default function Uploader({
       }
     } finally {
       setUploading(false);
+    }
+  }
+
+  /** public/sample-transcript.json 을 불러와 바로 체험할 수 있게 한다. */
+  async function loadSample() {
+    try {
+      const res = await fetch("/sample-transcript.json");
+      if (!res.ok) throw new Error("샘플을 찾을 수 없습니다");
+      const json = await res.json();
+      const parsed = parseTranscript(json);
+      onTranscript(parsed.segments);
+      onToast(`샘플 자막 ${parsed.segments.length}개 구간 로드`);
+    } catch (err) {
+      onToast(`샘플 로드 실패: ${(err as Error).message}`);
     }
   }
 
@@ -159,11 +188,15 @@ export default function Uploader({
           className="hidden-input"
           onChange={(e) => e.target.files?.[0] && handleTranscript(e.target.files[0])}
         />
+        <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={loadSample}>
+          ⚡ 샘플 자막으로 바로 체험하기
+        </button>
       </div>
 
       <div className="notice">
         Whisper 자동 자막은 3단계에서 붙습니다. 지금은 transcript.json 을 올리면
         모든 편집(자막/강조/스포트라이트/팝업/B-roll)이 자동 생성됩니다.
+        {serverless && " (Vercel에서는 영상은 브라우저에서만 분석됩니다.)"}
       </div>
     </div>
   );

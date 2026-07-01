@@ -9,6 +9,7 @@ import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
 import type { BrollCategory } from "@/lib/types";
 import type { BrollAsset } from "@/lib/editing/broll";
+import { isServerless } from "@/lib/env";
 
 export const STORAGE_ROOT = path.join(process.cwd(), "storage");
 export const UPLOAD_DIR = path.join(STORAGE_ROOT, "uploads");
@@ -17,8 +18,12 @@ export const BROLL_DIR = path.join(STORAGE_ROOT, "broll");
 
 const VIDEO_EXTS = new Set([".mp4", ".mov", ".webm", ".mkv", ".m4v"]);
 
-/** 필요한 storage 하위 폴더를 보장한다. */
+/**
+ * 필요한 storage 하위 폴더를 보장한다.
+ * 서버리스(Vercel) 환경은 파일 시스템이 읽기 전용이라 폴더 생성을 건너뛴다.
+ */
 export async function ensureStorage(): Promise<void> {
+  if (isServerless()) return;
   await Promise.all([
     mkdir(UPLOAD_DIR, { recursive: true }),
     mkdir(OUTPUT_DIR, { recursive: true }),
@@ -32,6 +37,9 @@ export async function ensureStorage(): Promise<void> {
  * 카테고리 폴더 밖에 있는 파일은 무시한다.
  */
 export async function scanBroll(): Promise<BrollAsset[]> {
+  // 서버리스에서는 B-roll 소스 폴더를 영구 보관할 수 없으므로 항상 빈 목록.
+  if (isServerless()) return [];
+
   await ensureStorage();
   const assets: BrollAsset[] = [];
 

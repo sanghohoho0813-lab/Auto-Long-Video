@@ -2,9 +2,11 @@
  * POST /api/render
  *
  * EditPlan + 업로드된 원본 경로를 받아 ffmpeg 렌더링을 시도한다.
- * ffmpeg 가 없으면 실행할 명령어(초안)를 반환한다.
  *
- * body: { plan: EditPlan, inputPath: "uploads/xxx.mp4" }
+ * - 로컬: ffmpeg 가 설치되어 있으면 실제 렌더, 없으면 명령어(초안) 반환
+ * - 서버리스(Vercel): ffmpeg 실행을 시도하지 않고, 안내 + 명령어 + edit-plan 정보만 반환
+ *
+ * body: { plan: EditPlan, inputPath?: "uploads/xxx.mp4" }
  */
 
 import { NextResponse } from "next/server";
@@ -12,19 +14,44 @@ import path from "node:path";
 import { access } from "node:fs/promises";
 import { STORAGE_ROOT, OUTPUT_DIR, ensureStorage, safeFileName } from "@/lib/storage";
 import { renderPlan, buildFfmpegCommand } from "@/lib/render/ffmpeg";
+import { isServerless } from "@/lib/env";
 import type { EditPlan } from "@/lib/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 300;
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function POST(req: Request) {
   try {
     const body = (await req.json()) as { plan?: EditPlan; inputPath?: string };
-    const { plan, inputPath } = body;
+    const { plan } = body;
 
-    if (!plan || !inputPath) {
+    if (!plan) {
+      return NextResponse.json({ error: "plan 이 필요합니다." }, { status: 400 });
+    }
+
+    // 서버리스 환경: 실제 렌더링을 절대 시도하지 않는다.
+    // 파일 시스템/ffmpeg 에 손대지 않고 명령어와 안내만 돌려준다.
+    if (isServerless()) {
+      const inName = safeFileName(plan.source?.fileName || "input.mp4");
+      const outName = `${path.basename(inName, path.extname(inName))}_edited.mp4`;
+      const cmd = buildFfmpegCommand(plan, inName, outName);
+      return NextResponse.json({
+        ok: true,
+        rendered: false,
+        serverless: true,
+        message:
+          "Vercel(서버리스)에서는 실제 렌더링을 지원하지 않습니다. " +
+          "edit-plan.json 을 내려받아 로컬 ffmpeg 또는 별도 렌더 워커에서 아래 명령으로 실행하세요.",
+        command: `${cmd.bin} ${cmd.args.join(" ")}`,
+        note: cmd.note,
+      });
+    }
+
+    const inputPath = body.inputPath;
+    if (!inputPath) {
       return NextResponse.json(
-        { error: "plan 과 inputPath 가 필요합니다." },
+        { error: "inputPath 가 필요합니다." },
         { status: 400 },
       );
     }

@@ -9,6 +9,8 @@ import { NextResponse } from "next/server";
 import { scanBroll } from "@/lib/storage";
 
 export const runtime = "nodejs";
+// B-roll 폴더는 런타임에 스캔해야 하므로 정적 캐시하지 않는다.
+export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {

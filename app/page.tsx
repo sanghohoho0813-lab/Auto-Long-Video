@@ -10,6 +10,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { EditSettings, TranscriptSegment, VideoMeta } from "@/lib/types";
+import type { RuntimeInfo } from "@/lib/env";
 import { DEFAULT_SETTINGS } from "@/lib/config/presets";
 import { buildEditPlan } from "@/lib/editing/planner";
 import type { BrollAsset } from "@/lib/editing/broll";
@@ -17,13 +18,27 @@ import Uploader from "@/components/Uploader";
 import SettingsPanel from "@/components/SettingsPanel";
 import ResultsPanel from "@/components/ResultsPanel";
 
+interface RuntimeState extends RuntimeInfo {
+  ffmpeg: boolean;
+  ffprobe: boolean;
+}
+
 export default function Home() {
   const [meta, setMeta] = useState<VideoMeta | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [settings, setSettings] = useState<EditSettings>(DEFAULT_SETTINGS);
   const [broll, setBroll] = useState<BrollAsset[]>([]);
+  const [env, setEnv] = useState<RuntimeState | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+
+  // 런타임 환경(로컬/서버리스) 확인 → UI 활성/비활성 결정
+  useEffect(() => {
+    fetch("/api/env")
+      .then((r) => r.json())
+      .then((d: RuntimeState) => setEnv(d))
+      .catch(() => setEnv(null));
+  }, []);
 
   // 서버의 B-roll 폴더 스캔 결과를 한 번 불러온다.
   useEffect(() => {
@@ -66,11 +81,20 @@ export default function Home() {
         팝업까지 자동으로 세련되게.
       </div>
 
+      {env?.serverless && (
+        <div className="notice" style={{ maxWidth: 1120, marginBottom: 16 }}>
+          ☁️ <b>Vercel 배포 환경</b>입니다. 편집 계획 생성 · 미리보기 ·
+          <b> edit-plan.json 다운로드</b>는 정상 동작하며, 실제 영상 렌더링은
+          로컬 ffmpeg 또는 별도 렌더 워커에서 실행하세요.
+        </div>
+      )}
+
       <div className="grid">
         <Uploader
           meta={meta}
           savedPath={savedPath}
           segments={segments}
+          serverless={env?.serverless ?? false}
           onVideo={(m, p) => {
             setMeta(m);
             setSavedPath(p);
@@ -79,7 +103,12 @@ export default function Home() {
           onToast={setToast}
         />
         <SettingsPanel settings={settings} onChange={setSettings} />
-        <ResultsPanel plan={plan} savedPath={savedPath} onToast={setToast} />
+        <ResultsPanel
+          plan={plan}
+          savedPath={savedPath}
+          serverless={env?.serverless ?? false}
+          onToast={setToast}
+        />
       </div>
 
       {broll.length > 0 && (

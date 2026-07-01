@@ -8,7 +8,7 @@
 
 ---
 
-## 🚀 실행 방법
+## 🚀 로컬 실행 방법
 
 ```bash
 npm install
@@ -16,15 +16,94 @@ npm run dev
 # http://localhost:3000
 ```
 
-> Node.js 18+ 필요. 실제 렌더링을 하려면 `ffmpeg` / `ffprobe` 설치가 필요합니다.
+> Node.js 18.18+ 필요. 실제 렌더링을 하려면 `ffmpeg` / `ffprobe` 설치가 필요합니다.
 > (미설치 상태에서도 편집 계획 생성 · 미리보기 · `edit-plan.json` 다운로드는 모두 동작합니다.)
 
 ### 빠른 체험
 
 1. `npm run dev` 실행 후 브라우저 접속
-2. mp4 영상 업로드 (없으면 transcript 만으로도 편집 계획 생성 가능)
-3. `storage/sample-transcript.json` 을 transcript 로 업로드
+2. mp4 영상 업로드 (없어도 됨 — transcript 만으로 편집 계획 생성 가능)
+3. **"⚡ 샘플 자막으로 바로 체험하기"** 클릭 (또는 직접 transcript.json 업로드)
 4. 프리셋 선택 → 편집 계획 자동 생성 → `edit-plan.json` 다운로드
+
+---
+
+## ☁️ Vercel 배포
+
+이 앱은 Vercel에 그대로 배포할 수 있습니다. 단, **서버리스 환경에서는 ffmpeg 렌더링과
+파일 영구 저장이 불가능**하므로, 배포 환경에서는 편집 계획 생성까지만 동작하고
+실제 렌더링은 로컬/별도 워커로 분리합니다. 앱은 `process.env.VERCEL` 로 환경을
+자동 감지해(`lib/env.ts`) 해당 기능을 안전하게 비활성화합니다.
+
+### 배포 체크리스트
+
+1. GitHub에 push
+2. [Vercel](https://vercel.com/new) → **Import Git Repository** 로 이 repo import
+3. 설정값 (대부분 자동 감지됨)
+   - **Framework Preset**: `Next.js`
+   - **Build Command**: `npm run build`
+   - **Install Command**: `npm install`
+   - **Output Directory**: 기본값 (`.next` — 그대로 두기)
+   - **Node.js Version**: 18.x 이상 (`.nvmrc` / `engines` 로 지정됨)
+4. **환경변수**: 필요 없음 (없이도 정상 동작).
+   `VERCEL` 은 Vercel이 자동 주입하므로 별도 설정 불필요.
+   다른 서버리스에서 강제하려면 `SERVERLESS=1` 을 설정.
+5. **Deploy** 클릭
+
+### Vercel에서 가능한 기능 ✅
+
+- 메인 페이지 로딩
+- transcript.json 업로드 / 샘플 자막 불러오기
+- 편집 설정(프리셋·세부값) 조정
+- 편집 계획(EditPlan) 생성 및 미리보기(타임라인·편집 리스트)
+- B-roll 삽입 후보 / 줌 / 스포트라이트 / 팝업 / 자막 강조 이벤트 생성
+- **edit-plan.json 다운로드**
+- `/api/render`: 실제 렌더링 대신 **ffmpeg 명령어 + 안내** 반환
+
+### Vercel에서 제한되는 기능 ⚠️
+
+| 기능 | 이유 | 대안 |
+|------|------|------|
+| 영상 서버 업로드/저장 | 파일 시스템 읽기전용 + 요청 바디 4.5MB 제한 | 브라우저 메모리에서 분석(길이/해상도) |
+| ffmpeg 실제 렌더링 | 서버리스 실행/시간 제한, 바이너리 부재 | 로컬 ffmpeg 또는 별도 렌더 워커 |
+| B-roll 폴더 스캔 | 소스 파일 영구 보관 불가 | 로컬에서 `storage/broll/` 사용 |
+
+### ⚠️ API Route 주의사항 (중요)
+
+- Next.js App Router는 **API route를 빌드 시 정적(Static)으로 최적화**할 수 있습니다.
+  이 경우 응답이 빌드 시점 값으로 박제되어, 런타임 환경 감지(`/api/env`)나
+  파일 스캔(`/api/broll`)이 실제와 다르게 동작합니다.
+- 그래서 이 프로젝트의 **모든** `app/api/*` route에는 다음을 명시합니다.
+  ```ts
+  export const runtime = "nodejs";        // edge 아님 (fs / child_process 사용)
+  export const dynamic = "force-dynamic"; // 정적 최적화·빌드타임 박제 방지
+  ```
+  `npm run build` 출력에서 모든 API route가 `○ Static` 이 아니라 **`ƒ Dynamic`** 으로
+  찍혀야 정상입니다.
+- 환경 감지는 오직 **`lib/env.ts` 한 곳**에서만 판단합니다
+  (`process.env.VERCEL === "1"` 또는 `SERVERLESS === "1"`). 여러 파일에서
+  `VERCEL` / `VERCEL_ENV` / `NEXT_RUNTIME` 을 섞어 쓰지 않습니다.
+- `/api/env` 는 디버그용으로 `isServerless / platform / nodeEnv / vercel / vercelEnv /
+  nextRuntime / timestamp` 를 함께 반환합니다. `timestamp` 가 요청마다 바뀌면
+  응답이 정적으로 박제되지 않았다는 증거입니다.
+- **Vercel에서 `/api/render` 는 실제 ffmpeg를 실행하지 않고** command/edit-plan 정보만
+  안전하게 반환합니다(로컬에서는 ffmpeg가 있으면 실제 렌더).
+
+> 로컬에서 환경 감지를 테스트할 때는 이전에 `VERCEL=1` 로 띄운 서버가 포트에 남아있지
+> 않도록 반드시 종료하고(예: `fuser -k 3000/tcp`), 로컬 테스트는 `env -u VERCEL` 로
+> 실행하세요. stale 서버가 남아 있으면 로컬인데도 serverless로 보일 수 있습니다.
+
+### 실제 렌더링 분리 계획
+
+Vercel은 **편집 계획 생성기**로 사용하고, 렌더링은 아래처럼 분리합니다.
+
+```
+[Vercel: 계획 생성] → edit-plan.json → [로컬 ffmpeg | 워커(예: Render/Fly/EC2/큐)] → 1080p mp4
+```
+
+- 단기: `edit-plan.json` 다운로드 → 로컬에서 `ffmpeg` 로 렌더 (명령어는 `/api/render` 가 제공)
+- 중기: 렌더 전용 워커(장시간 작업 허용)에 `edit-plan.json` 을 전달해 큐 기반 렌더
+- 렌더 로직은 이미 `lib/render/ffmpeg.ts` 에 모듈화되어 있어 워커에서 그대로 재사용 가능
 
 ---
 
@@ -36,6 +115,7 @@ npm run dev
 ```
 lib/
 ├── types.ts                # 공통 타입 (EditPlan, EditEvent, EditSettings ...)
+├── env.ts                  # 로컬/서버리스(Vercel) 환경 구분
 ├── config/
 │   ├── keywords.ts         # 강조/스포트라이트/팝업/B-roll 키워드 사전
 │   └── presets.ts          # 얌전하게 / 기본 / 생동감 있게 프리셋
@@ -59,9 +139,13 @@ app/
 ├── page.tsx                # 상태 오케스트레이션 (실시간 편집 계획 재생성)
 ├── globals.css             # 토스풍 흰색/파랑 디자인 시스템
 └── api/
-    ├── upload/route.ts     # mp4 업로드 + 메타 추출
-    ├── broll/route.ts      # B-roll 폴더 스캔
-    └── render/route.ts     # ffmpeg 렌더링 (미설치 시 명령어 반환)
+    ├── env/route.ts        # 로컬/서버리스 환경 정보 (UI 활성화 판단)
+    ├── upload/route.ts     # mp4 업로드 + 메타 추출 (서버리스는 브라우저 분석)
+    ├── broll/route.ts      # B-roll 폴더 스캔 (서버리스는 빈 목록)
+    └── render/route.ts     # ffmpeg 렌더링 (서버리스/미설치 시 명령어 반환)
+
+public/
+└── sample-transcript.json  # "샘플 자막으로 바로 체험하기" 데이터
 
 components/
 ├── Uploader.tsx            # 영상 · transcript 업로드

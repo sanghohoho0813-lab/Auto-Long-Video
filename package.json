@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "description": "김팀장의 롱폼 자동편집기 - 유튜브 롱폼 강의/해설 영상 자동 편집 로컬 웹앱",
+  "engines": {
+    "node": ">=18.18.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",

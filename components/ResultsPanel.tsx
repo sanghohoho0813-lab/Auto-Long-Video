@@ -20,10 +20,11 @@ import EditList from "./EditList";
 interface Props {
   plan: EditPlan | null;
   savedPath: string | null;
+  serverless: boolean;
   onToast: (msg: string) => void;
 }
 
-export default function ResultsPanel({ plan, savedPath, onToast }: Props) {
+export default function ResultsPanel({ plan, savedPath, serverless, onToast }: Props) {
   const [rendering, setRendering] = useState(false);
   const [renderMsg, setRenderMsg] = useState<{ text: string; cmd?: string } | null>(null);
 
@@ -52,7 +53,9 @@ export default function ResultsPanel({ plan, savedPath, onToast }: Props) {
 
   async function render() {
     if (!plan) return;
-    if (!savedPath) {
+    // 로컬에서 실제 렌더링은 서버 저장 원본이 필요하지만,
+    // 서버리스에서는 명령어 안내만 받으므로 savedPath 없이도 호출한다.
+    if (!serverless && !savedPath) {
       onToast("서버에 저장된 원본이 없어 렌더링할 수 없습니다");
       return;
     }
@@ -62,14 +65,14 @@ export default function ResultsPanel({ plan, savedPath, onToast }: Props) {
       const res = await fetch("/api/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, inputPath: savedPath }),
+        body: JSON.stringify({ plan, inputPath: savedPath ?? undefined }),
       });
       const data = await res.json();
       setRenderMsg({ text: data.message || "완료", cmd: data.command });
       if (data.outputPath) onToast(`렌더링 완료: ${data.outputPath}`);
-      else onToast(data.message || "렌더링 요청 처리됨");
+      else onToast(data.message || "요청 처리됨");
     } catch (err) {
-      setRenderMsg({ text: `렌더링 실패: ${(err as Error).message}` });
+      setRenderMsg({ text: `요청 실패: ${(err as Error).message}` });
     } finally {
       setRendering(false);
     }
@@ -119,17 +122,29 @@ export default function ResultsPanel({ plan, savedPath, onToast }: Props) {
         <button
           className="btn btn-primary"
           onClick={render}
-          disabled={rendering || !savedPath}
+          disabled={rendering || (!serverless && !savedPath)}
         >
-          {rendering ? "렌더링 중…" : "🎬 1080p 렌더링"}
+          {rendering
+            ? "처리 중…"
+            : serverless
+              ? "🧾 ffmpeg 명령 보기"
+              : "🎬 1080p 렌더링"}
         </button>
       </div>
 
-      {!savedPath && (
+      {serverless ? (
         <div className="notice warn">
-          렌더링은 서버에 저장된 원본이 필요합니다. (ffprobe/ffmpeg 미설치 환경에서는
-          edit-plan.json 다운로드 후 별도 렌더 파이프라인에서 사용하세요.)
+          ☁️ Vercel 환경에서는 실제 영상 렌더링을 지원하지 않습니다. 위 버튼은
+          로컬/워커에서 실행할 <b>ffmpeg 명령어</b>만 보여줍니다. edit-plan.json 을
+          내려받아 로컬 ffmpeg 로 렌더링하세요.
         </div>
+      ) : (
+        !savedPath && (
+          <div className="notice warn">
+            렌더링은 서버에 저장된 원본이 필요합니다. (ffprobe/ffmpeg 미설치 환경에서는
+            edit-plan.json 다운로드 후 별도 렌더 파이프라인에서 사용하세요.)
+          </div>
+        )
       )}
 
       {renderMsg && (
