@@ -22,6 +22,8 @@ import HelpPanel from "@/components/HelpPanel";
 interface RuntimeState extends RuntimeInfo {
   ffmpeg: boolean;
   ffprobe: boolean;
+  whisper: boolean;
+  whisperBackend: string | null;
 }
 
 export default function Home() {
@@ -99,6 +101,8 @@ export default function Home() {
           savedPath={savedPath}
           segments={segments}
           serverless={env?.serverless ?? false}
+          whisperAvailable={env?.whisper ?? false}
+          whisperBackend={env?.whisperBackend ?? null}
           onVideo={(m, p) => {
             setMeta(m);
             setSavedPath(p);
@@ -124,7 +128,11 @@ export default function Home() {
       )}
 
       <div style={{ marginTop: 20 }}>
-        <HelpPanel serverless={env?.serverless ?? false} />
+        <HelpPanel
+          serverless={env?.serverless ?? false}
+          ffmpegAvailable={env?.ffmpeg ?? false}
+          whisperAvailable={env?.whisper ?? false}
+        />
       </div>
 
       {toast && <div className="toast">{toast}</div>}

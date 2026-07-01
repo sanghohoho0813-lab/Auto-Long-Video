@@ -17,6 +17,8 @@ interface Props {
   savedPath: string | null;
   segments: TranscriptSegment[];
   serverless: boolean;
+  whisperAvailable: boolean;
+  whisperBackend: string | null;
   onVideo: (meta: VideoMeta, savedPath: string | null) => void;
   onTranscript: (segments: TranscriptSegment[]) => void;
   onToast: (msg: string) => void;
@@ -27,6 +29,8 @@ export default function Uploader({
   savedPath,
   segments,
   serverless,
+  whisperAvailable,
+  whisperBackend,
   onVideo,
   onTranscript,
   onToast,
@@ -34,6 +38,10 @@ export default function Uploader({
   const videoInput = useRef<HTMLInputElement>(null);
   const transcriptInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [whisperMsg, setWhisperMsg] = useState<{ text: string; hints?: string[] } | null>(
+    null,
+  );
 
   async function handleVideo(file: File) {
     setUploading(true);
@@ -118,6 +126,63 @@ export default function Uploader({
     }
   }
 
+  /** 🎙️ 영상에서 Whisper 로 자동 자막 생성 (로컬 전용) */
+  async function autoTranscribe() {
+    if (!savedPath) {
+      onToast("먼저 영상을 업로드하세요");
+      return;
+    }
+    setTranscribing(true);
+    setWhisperMsg(null);
+    try {
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputPath: savedPath, language: "ko" }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        setWhisperMsg({
+          text: data.message || data.error || "자동 자막 생성 실패",
+          hints: data.hints,
+        });
+        onToast(data.message || data.error || "자동 자막 생성 실패");
+        return;
+      }
+      const parsed = parseTranscript(data.segments);
+      onTranscript(parsed.segments);
+      onToast(`자동 자막 완료 (${parsed.segments.length}개 · ${data.backend})`);
+      setTimeout(() => {
+        document
+          .getElementById("results")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
+    } catch (err) {
+      setWhisperMsg({ text: `자동 자막 생성 실패: ${(err as Error).message}` });
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  /** 현재 segments 를 transcript.json 으로 다운로드 */
+  function downloadTranscript() {
+    if (segments.length === 0) return;
+    const blob = new Blob([JSON.stringify(segments, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "transcript.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    onToast("transcript.json 다운로드 완료");
+  }
+
+  // 자동 자막 버튼 활성 조건
+  const whisperReady = !serverless && whisperAvailable;
+  const whisperDisabled = transcribing || !whisperReady || !savedPath;
+
   return (
     <div className="card">
       <div className="card-head">
@@ -188,7 +253,7 @@ export default function Uploader({
               <div className="dropzone-icon">📝</div>
               <div className="dropzone-label">transcript.json 업로드</div>
               <div className="dropzone-hint">
-                [{"{ start, end, text }"}] 형식 · Whisper 연동 전까지 직접 업로드
+                [{"{ start, end, text }"}] 형식 · 직접 업로드
               </div>
             </>
           )}
@@ -200,18 +265,76 @@ export default function Uploader({
           className="hidden-input"
           onChange={(e) => e.target.files?.[0] && handleTranscript(e.target.files[0])}
         />
+
+        {/* 🎙️ Whisper 자동 자막 */}
+        <button
+          className="btn btn-ghost"
+          style={{ marginTop: 10 }}
+          onClick={autoTranscribe}
+          disabled={whisperDisabled}
+          title={
+            serverless
+              ? "Vercel에서는 로컬/워커에서 실행 예정"
+              : !whisperAvailable
+                ? "이 서버에 Whisper 가 설치되어 있지 않습니다"
+                : !savedPath
+                  ? "먼저 영상을 업로드하세요"
+                  : "Whisper 로 음성을 인식해 자막을 만듭니다"
+          }
+        >
+          {transcribing ? "🎙️ 자막 인식 중…" : "🎙️ 영상에서 자동 자막 생성"}
+        </button>
+
+        <div className="dropzone-hint" style={{ textAlign: "center", marginTop: 6 }}>
+          {serverless
+            ? "Whisper 자동 자막은 로컬/워커에서 실행 예정"
+            : !whisperAvailable
+              ? "Whisper 미설치 — transcript.json 업로드 또는 샘플을 사용하세요"
+              : whisperBackend
+                ? `백엔드: ${whisperBackend} · 한국어(ko) 기본`
+                : "영상 업로드 후 자동 자막 생성 가능"}
+        </div>
+
         <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={loadSample}>
           ⚡ 샘플로 편집 계획 생성
         </button>
         <div className="dropzone-hint" style={{ textAlign: "center", marginTop: 6 }}>
           영상 없이도 바로 편집 계획을 미리볼 수 있어요
         </div>
+
+        {segments.length > 0 && (
+          <button
+            className="btn btn-ghost"
+            style={{ marginTop: 10 }}
+            onClick={downloadTranscript}
+          >
+            ⬇️ transcript.json 다운로드
+          </button>
+        )}
       </div>
 
+      {/* 자막 인식 진행 / 오류 안내 */}
+      {transcribing && (
+        <div className="notice">
+          <b>🎙️ 음성 인식 중…</b> Whisper 로 오디오를 분석하고 있습니다. 긴 영상은 수 분
+          이상 걸릴 수 있어요(모델 최초 실행 시 다운로드로 더 걸릴 수 있음).
+        </div>
+      )}
+      {whisperMsg && (
+        <div className="notice warn">
+          {whisperMsg.text}
+          {whisperMsg.hints && (
+            <code>{whisperMsg.hints.map((h) => `• ${h}`).join("\n")}</code>
+          )}
+        </div>
+      )}
+
       <div className="notice">
-        Whisper 자동 자막은 3단계에서 붙습니다. 지금은 transcript.json 을 올리면
-        모든 편집(자막/강조/스포트라이트/팝업/B-roll)이 자동 생성됩니다.
-        {serverless && " (Vercel에서는 영상은 브라우저에서만 분석됩니다.)"}
+        mp4 만 업로드하면 <b>🎙️ 자동 자막</b>으로 transcript 를 만들고, 그 자막으로
+        모든 편집(강조/스포트라이트/팝업/B-roll)이 자동 생성됩니다.
+        {serverless
+          ? " (Vercel에서는 Whisper 미실행 · 영상은 브라우저 분석)"
+          : " transcript.json 직접 업로드도 가능합니다."}
       </div>
     </div>
   );

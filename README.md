@@ -139,10 +139,12 @@ app/
 ├── page.tsx                # 상태 오케스트레이션 (실시간 편집 계획 재생성)
 ├── globals.css             # 토스풍 흰색/파랑 디자인 시스템
 └── api/
-    ├── env/route.ts        # 로컬/서버리스 환경 정보 (UI 활성화 판단)
+    ├── env/route.ts        # 로컬/서버리스 · ffmpeg/whisper 감지 (UI 활성화 판단)
     ├── upload/route.ts     # mp4 업로드 + 메타 추출 (서버리스는 브라우저 분석)
     ├── broll/route.ts      # B-roll 폴더 스캔 (서버리스는 빈 목록)
-    └── render/route.ts     # ffmpeg 렌더링 (서버리스/미설치 시 명령어 반환)
+    ├── transcribe/route.ts # Whisper 자동 자막 (로컬 전용, 서버리스는 안내)
+    ├── render/route.ts     # ffmpeg 렌더링 (서버리스/미설치 시 명령어 반환)
+    └── download/route.ts   # 렌더 결과/transcript 파일 다운로드
 
 public/
 └── sample-transcript.json  # "샘플 자막으로 바로 체험하기" 데이터
@@ -164,7 +166,7 @@ render/
 ├── ass.ts                  # 자막(키워드 강조) + 팝업 → ASS 자막 파일 생성
 ├── filtergraph.ts          # EditPlan → ffmpeg filter_complex
 ├── ffmpeg.ts               # 구성/실행(probe·compose·args·renderPlan)
-└── whisper.ts              # Whisper 연동 인터페이스 (다음 단계)
+└── whisper.ts              # Whisper 자동 자막(멀티 백엔드 CLI 어댑터)
 ```
 
 비디오 필터 체인: **컷 → 1080p 스케일 → 줌 → 스포트라이트 → B-roll → 자막(ASS)**
@@ -212,13 +214,42 @@ transcript + settings + videoMeta
 
 ---
 
+## 🎙️ Whisper 자동 자막 (로컬)
+
+mp4 만 업로드하면 음성을 인식해 transcript 를 자동 생성합니다.
+UI 의 **"🎙️ 영상에서 자동 자막 생성"** → `/api/transcribe`(로컬 실행) → segments 반환
+→ 그 자막으로 edit-plan 이 자동 생성되고, `transcript.json` 도 내려받을 수 있습니다.
+
+**흐름**: mp4 → (ffmpeg 로 16kHz mono wav 추출) → Whisper CLI → SRT → `TranscriptSegment[]`
+
+**지원 백엔드**(설치된 것을 자동 감지, 한국어 `ko` 기본):
+
+| 백엔드 | 설치 | 감지 조건 |
+|--------|------|-----------|
+| faster-whisper | `pip install whisper-ctranslate2` | `whisper-ctranslate2` CLI |
+| openai-whisper | `pip install -U openai-whisper` | `whisper` CLI |
+| whisper.cpp | 빌드 후 `WHISPER_CPP_MODEL=<ggml 모델>` | `whisper-cli`/`main` + 모델 |
+| custom | `WHISPER_CUSTOM_CMD` 환경변수 | 언제나(임의 whisper 연결) |
+
+`WHISPER_CUSTOM_CMD` 는 `{{audio}}`, `{{srt}}`, `{{outdir}}`, `{{lang}}`, `{{model}}`
+토큰을 치환하는 명령 템플릿으로, 어떤 whisper 든 연결할 수 있습니다.
+기본 모델은 `WHISPER_MODEL`(기본 `base`)로 바꿀 수 있습니다.
+
+**안전장치**: 미설치 시 UI 에 설치 안내 표시 · 긴 영상/최초 모델 다운로드 지연 안내 ·
+실패 시 에러 메시지 · 한국어 인식 기본.
+
+> ⚠️ Vercel(서버리스)에서는 Whisper 를 실행하지 않고 "로컬/워커에서 실행 예정" 안내만
+> 반환합니다. 이때는 transcript.json 을 직접 업로드하거나 샘플을 사용하세요.
+
+---
+
 ## ✨ 구현된 기능 (MVP)
 
 | # | 기능 | 상태 |
 |---|------|------|
 | 1 | 영상 업로드 + 메타(길이/해상도/용량/FPS) 표시 | ✅ |
 | 2 | 자동 컷 편집 (무음 구간, 설정 4종) | ✅ (transcript 기반, ffmpeg silencedetect 연동 준비) |
-| 3 | 자동 자막 (transcript.json 업로드) | ✅ (Whisper 연동 인터페이스 준비) |
+| 3 | 자동 자막 (transcript.json 업로드 + **Whisper 자동 인식**) | ✅ (로컬 전용) |
 | 4 | 핵심 키워드 자동 강조 (색상/크기/bold) | ✅ |
 | 5 | 자동 줌 (약한 줌인/줌아웃, 부드럽게) | ✅ |
 | 6 | 스포트라이트 (중요 문장 감지) | ✅ |
@@ -235,7 +266,8 @@ transcript + settings + videoMeta
 - **1단계**: 구조 · UI · 편집 계획 생성 · edit-plan.json · ffmpeg 렌더 기본 골격 ✅
 - **2단계 (현재)**: ffmpeg `filter_complex` 로 컷/자막·강조/줌/스포트라이트/팝업 **실제 렌더링** ✅
   (B-roll 오버레이 구조 준비 · 로컬 전용 · Vercel 은 명령만 반환)
-- **3단계**: whisper.cpp / faster-whisper 자동 자막 (`lib/render/whisper.ts` 어댑터 구현)
+- **3단계 (현재)**: Whisper 자동 자막 ✅ — faster-whisper / openai-whisper / whisper.cpp /
+  custom CLI 백엔드 자동 감지, mp4 → transcript 자동 생성 (로컬 전용, Vercel 은 안내만)
 - **4단계**: B-roll 추천 알고리즘 고도화 (임베딩 기반 문맥 매칭) + 렌더 워커 분리(진행률 스트리밍)
 
 ---

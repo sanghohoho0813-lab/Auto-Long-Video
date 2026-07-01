@@ -12,6 +12,7 @@
 import { NextResponse } from "next/server";
 import { getRuntimeDebug } from "@/lib/env";
 import { checkFfmpeg } from "@/lib/render/ffmpeg";
+import { detectWhisper } from "@/lib/render/whisper";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -19,9 +20,11 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const debug = getRuntimeDebug();
 
-  // 로컬에서만 ffmpeg 설치 여부를 확인한다(서버리스에서는 굳이 spawn 하지 않음).
+  // 로컬에서만 ffmpeg / whisper 설치 여부를 확인한다(서버리스에서는 spawn 안 함).
   let ffmpeg = false;
   let ffprobe = false;
+  let whisper = false;
+  let whisperBackend: string | null = null;
   if (!debug.serverless) {
     try {
       const avail = await checkFfmpeg();
@@ -30,10 +33,17 @@ export async function GET() {
     } catch {
       // 무시: 확인 실패는 미설치로 간주
     }
+    try {
+      const w = await detectWhisper();
+      whisper = w.available;
+      whisperBackend = w.backend;
+    } catch {
+      // 무시
+    }
   }
 
   return NextResponse.json(
-    { ...debug, ffmpeg, ffprobe },
+    { ...debug, ffmpeg, ffprobe, whisper, whisperBackend },
     { headers: { "Cache-Control": "no-store" } },
   );
 }
