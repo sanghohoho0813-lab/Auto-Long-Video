@@ -25,7 +25,7 @@ export interface VideoMeta {
 }
 
 /** 편집 강도 프리셋 종류 */
-export type PresetName = "calm" | "default" | "vivid";
+export type PresetName = "calm" | "default" | "vivid" | "kim";
 
 /**
  * 편집 설정.

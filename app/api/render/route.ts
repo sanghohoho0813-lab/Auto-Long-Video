@@ -21,6 +21,7 @@ import {
   safeFileName,
 } from "@/lib/storage";
 import { renderPlan, buildFfmpegCommand } from "@/lib/render/ffmpeg";
+import { clipPlanToRange } from "@/lib/render/preview";
 import { createJob, updateJob, getJob } from "@/lib/render/jobs";
 import { isServerless } from "@/lib/env";
 import type { EditPlan } from "@/lib/types";
@@ -29,27 +30,46 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
+interface RenderBody {
+  plan?: EditPlan;
+  inputPath?: string;
+  range?: { start: number; end: number };
+}
+
 export async function POST(req: Request) {
   try {
-    const body = (await req.json()) as { plan?: EditPlan; inputPath?: string };
-    const { plan } = body;
+    const body = (await req.json()) as RenderBody;
+    const { plan: fullPlan } = body;
 
-    if (!plan) {
+    if (!fullPlan) {
       return NextResponse.json({ error: "plan 이 필요합니다." }, { status: 400 });
     }
 
+    // 테스트 구간(preview) 렌더: 구간만 잘라 이벤트 shift + 입력 -ss/-t
+    const isPreview = !!body.range;
+    const clipped = isPreview
+      ? clipPlanToRange(fullPlan, body.range!.start, body.range!.end)
+      : null;
+    const plan = clipped ? clipped.plan : fullPlan;
+    const clip = clipped ? { start: clipped.clipStart, duration: clipped.clipDuration } : undefined;
+    const rangeTag = clip
+      ? `_preview_${Math.round(clip.start)}-${Math.round(clip.start + clip.duration)}s`
+      : "";
+
     // 서버리스 환경: 실제 렌더링을 절대 시도하지 않는다.
     if (isServerless()) {
-      const inName = safeFileName(plan.source?.fileName || "input.mp4");
-      const outName = `${path.basename(inName, path.extname(inName))}_edited.mp4`;
-      const cmd = buildFfmpegCommand(plan, inName, outName);
+      const inName = safeFileName(fullPlan.source?.fileName || "input.mp4");
+      const outName = `${path.basename(inName, path.extname(inName))}${rangeTag}_edited.mp4`;
+      const cmd = buildFfmpegCommand(plan, inName, outName, { clip });
       return NextResponse.json({
         ok: true,
         rendered: false,
         serverless: true,
+        preview: isPreview,
         message:
           "Vercel(서버리스)에서는 실제 렌더링을 지원하지 않습니다. " +
-          "edit-plan.json 을 내려받아 로컬 ffmpeg 또는 별도 렌더 워커에서 아래 명령으로 실행하세요.",
+          (isPreview ? "테스트 구간 " : "") +
+          "edit-plan 기반 아래 명령을 로컬 ffmpeg/워커에서 실행하세요.",
         command: cmd.command,
         applied: cmd.applied,
         note: cmd.note,
@@ -70,13 +90,13 @@ export async function POST(req: Request) {
     }
 
     const baseName = safeFileName(path.basename(inputPath, path.extname(inputPath)));
-    const outName = `${baseName}_edited.mp4`;
+    const outName = `${baseName}${rangeTag}_edited.mp4`;
     const outPath = path.join(OUTPUT_DIR, outName);
     const downloadUrl = `/api/download?file=${encodeURIComponent(`output/${outName}`)}`;
 
     // 입력 파일 존재 확인. 없으면 명령어만 반환(잡 생성 안 함).
     if (!(await exists(absInput))) {
-      const cmd = buildFfmpegCommand(plan, absInput, outPath);
+      const cmd = buildFfmpegCommand(plan, absInput, outPath, { clip });
       return NextResponse.json({
         ok: false,
         rendered: false,
@@ -100,6 +120,7 @@ export async function POST(req: Request) {
       try {
         const result = await renderPlan(plan, absInput, outPath, {
           resolveBrollFile,
+          clip,
           onProgress: (p) =>
             updateJob(job.id, { status: p.stage, percent: p.percent }),
         });
@@ -134,9 +155,10 @@ export async function POST(req: Request) {
     return NextResponse.json({
       ok: true,
       async: true,
+      preview: isPreview,
       jobId: job.id,
       statusUrl: `/api/render?jobId=${job.id}`,
-      message: "렌더링을 시작했습니다.",
+      message: isPreview ? "테스트 구간 렌더링을 시작했습니다." : "렌더링을 시작했습니다.",
     });
   } catch (err) {
     return NextResponse.json(

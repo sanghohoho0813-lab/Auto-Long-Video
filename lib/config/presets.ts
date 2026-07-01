@@ -10,12 +10,14 @@
 import type { EditSettings, PresetName } from "@/lib/types";
 
 export const PRESET_LABELS: Record<PresetName, string> = {
+  kim: "김팀장 기본",
   calm: "얌전하게",
   default: "기본",
   vivid: "생동감 있게",
 };
 
 export const PRESET_DESCRIPTIONS: Record<PresetName, string> = {
+  kim: "대표님/컨설턴트 대상 롱폼에 맞춘 절제된 기본값 (B-roll 45초·줌 10초·팝업 30초)",
   calm: "B-roll 45초 간격, 줌 약하게, 팝업 적게 — 차분한 강의 톤",
   default: "B-roll 30초 간격, 줌 기본, 팝업 보통 — 균형 잡힌 기본값",
   vivid: "B-roll 20초 간격, 줌 조금 더, 팝업 많게 — 생동감 있는 톤",
@@ -58,6 +60,14 @@ const BASE: Omit<EditSettings, "preset"> = {
 
 /** 프리셋별 오버라이드 값 */
 const OVERRIDES: Record<PresetName, DeepPartial<Omit<EditSettings, "preset">>> = {
+  // 김팀장 경영 노트: 절제된 롱폼 기본값
+  kim: {
+    zoom: { intervalSec: 10 },
+    spotlight: { darkenAmount: 0.12 },
+    broll: { intervalSec: 45 },
+    popup: { minGapSec: 30 },
+    subtitle: { emphasisScale: 1.15 },
+  },
   calm: {
     zoom: { zoomScale: 1.03, intervalSec: 10, durationSec: 4 },
     spotlight: { darkenAmount: 0.1 },

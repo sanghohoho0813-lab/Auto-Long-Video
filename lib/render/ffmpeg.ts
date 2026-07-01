@@ -200,11 +200,15 @@ export function buildFfmpegArgs(
   comp: RenderComposition,
   inputPath: string,
   outputPath: string,
-  opts: { progress?: boolean } = {},
+  opts: { progress?: boolean; clip?: { start: number; duration: number } } = {},
 ): string[] {
   const args = ["-y"];
   // 진행률 파싱용(stderr 로 기계가 읽기 좋은 key=value 출력)
   if (opts.progress) args.push("-progress", "pipe:2");
+  // 테스트 구간(preview): 메인 입력만 [start, start+duration] 으로 잘라 읽는다.
+  if (opts.clip) {
+    args.push("-ss", String(opts.clip.start), "-t", String(opts.clip.duration));
+  }
   args.push("-i", inputPath);
   for (const f of comp.extraInputs) args.push("-i", f);
 
@@ -238,10 +242,11 @@ export function buildFfmpegCommand(
   plan: EditPlan,
   inputPath: string,
   outputPath: string,
+  opts: { clip?: { start: number; duration: number } } = {},
 ): { bin: string; args: string[]; command: string; applied: string[]; note: string } {
   const baseName = path.basename(outputPath, path.extname(outputPath));
   const comp = composeRender(plan, baseName, { hasAudio: true });
-  const args = buildFfmpegArgs(comp, inputPath, outputPath);
+  const args = buildFfmpegArgs(comp, inputPath, outputPath, { clip: opts.clip });
   return {
     bin: "ffmpeg",
     args,
@@ -273,6 +278,8 @@ export interface RenderProgress {
 export interface RenderOptions {
   resolveBrollFile?: (f: string) => string | null;
   onProgress?: (p: RenderProgress) => void;
+  /** 테스트 구간 렌더: 메인 입력을 [start, start+duration] 로 잘라 읽는다(이벤트는 이미 shift됨). */
+  clip?: { start: number; duration: number };
 }
 
 /**
@@ -318,7 +325,10 @@ export async function renderPlan(
   }
 
   // ffmpeg 는 진행률 파싱을 위해 -progress pipe:2(=stderr) 를 추가한다.
-  const args = buildFfmpegArgs(comp, inputPath, outputPath, { progress: true });
+  const args = buildFfmpegArgs(comp, inputPath, outputPath, {
+    progress: true,
+    clip: options.clip,
+  });
   const command = `ffmpeg ${args.map(shellQuote).join(" ")}`;
   const outDur = comp.outputDurationSec || plan.stats.originalDurationSec || 1;
 

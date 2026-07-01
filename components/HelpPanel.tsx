@@ -31,6 +31,15 @@ const CAN_BASE: string[] = [
   "edit-plan.json 다운로드",
 ];
 
+const BETA_STEPS: string[] = [
+  "mp4 업로드",
+  "🎙️ 자동 자막 생성 (또는 transcript.json 업로드)",
+  "edit-plan 확인 (타임라인 · 편집 리스트)",
+  "효과 빈도 확인 (테스트 리포트 · 과다 경고)",
+  "1~2분 구간만 먼저 “테스트 구간 렌더”",
+  "결과 확인 후 “전체 렌더링”",
+];
+
 export default function HelpPanel({ serverless, ffmpegAvailable, whisperAvailable }: Props) {
   // 로컬에서 실제 사용 가능한 기능을 동적으로 구성
   const can = [...CAN_BASE];
@@ -62,8 +71,27 @@ export default function HelpPanel({ serverless, ffmpegAvailable, whisperAvailabl
         <span className="card-title">사용 방법 &amp; 환경 안내</span>
       </div>
 
+      {/* 실제 영상 베타 테스트 순서 */}
+      <div className="help-subtitle">🧪 실제 영상 베타 테스트 순서</div>
+      <ol className="beta-steps">
+        {BETA_STEPS.map((t, i) => (
+          <li key={i} className="beta-step">
+            <span className="beta-check" />
+            <span>
+              <b>{i + 1}.</b> {t}
+            </span>
+          </li>
+        ))}
+      </ol>
+      <div className="notice warn" style={{ marginTop: 12 }}>
+        ⏱ 처음부터 전체 20~40분 영상을 렌더링하지 마세요. <b>짧은 구간(1~2분) 테스트</b>로
+        효과가 과하지 않은지 먼저 확인한 뒤 전체 렌더링을 진행하세요.
+      </div>
+
       {/* 워크플로우 */}
-      <div className="help-subtitle">예시 워크플로우</div>
+      <div className="help-subtitle" style={{ marginTop: 20 }}>
+        예시 워크플로우
+      </div>
       <ol className="workflow">
         {WORKFLOW.map((w) => (
           <li key={w.n} className="workflow-step">

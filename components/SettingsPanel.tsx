@@ -17,6 +17,7 @@ interface Props {
 }
 
 const PRESET_EMOJI: Record<PresetName, string> = {
+  kim: "🧑‍💼",
   calm: "🌿",
   default: "⚖️",
   vivid: "🔥",

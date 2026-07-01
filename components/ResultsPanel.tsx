@@ -16,6 +16,7 @@ import type { EditPlan } from "@/lib/types";
 import { EVENT_META, EVENT_ORDER } from "@/lib/eventMeta";
 import Timeline from "./Timeline";
 import EditList from "./EditList";
+import TestReport from "./TestReport";
 
 interface Props {
   plan: EditPlan | null;
@@ -56,6 +57,8 @@ export default function ResultsPanel({
   onToast,
 }: Props) {
   const [render, setRender] = useState<RenderState>({ status: "idle" });
+  const [previewStart, setPreviewStart] = useState(0);
+  const [previewEnd, setPreviewEnd] = useState(60);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // 언마운트 시 폴링 정리
@@ -141,11 +144,15 @@ export default function ResultsPanel({
     }, 1000);
   }
 
-  async function runRender() {
+  async function runRender(range?: { start: number; end: number }) {
     if (!plan) return;
     // 로컬 실제 렌더링은 서버 저장 원본이 필요. 서버리스는 명령어만 받으므로 savedPath 불필요.
     if (!serverless && !savedPath) {
       onToast("서버에 저장된 원본이 없어 렌더링할 수 없습니다");
+      return;
+    }
+    if (range && range.end <= range.start) {
+      onToast("테스트 구간의 끝(end)은 시작(start)보다 커야 합니다");
       return;
     }
     setRender({ status: "running", stageLabel: "요청 전송 중", percent: 0 });
@@ -153,7 +160,7 @@ export default function ResultsPanel({
       const res = await fetch("/api/render", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan, inputPath: savedPath ?? undefined }),
+        body: JSON.stringify({ plan, inputPath: savedPath ?? undefined, range }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "렌더링 요청 실패");
@@ -220,6 +227,9 @@ export default function ResultsPanel({
         ))}
       </div>
 
+      {/* 테스트 리포트 + 효과 과다 경고 */}
+      <TestReport plan={plan} />
+
       {/* 타임라인 */}
       <Timeline plan={plan} />
 
@@ -228,6 +238,51 @@ export default function ResultsPanel({
         적용된 편집 ({plan.events.length})
       </div>
       <EditList plan={plan} />
+
+      {/* 테스트 구간(preview) 렌더 — 긴 영상 전체를 먼저 렌더하지 않게 */}
+      <div className="preview-box">
+        <div className="preview-title">🔎 테스트 구간 먼저 렌더</div>
+        <div className="preview-desc">
+          20~40분 전체를 처음부터 렌더하지 말고, 짧은 구간(1~2분)으로 결과를 먼저
+          확인하세요.
+        </div>
+        <div className="preview-controls">
+          <label>
+            start(초)
+            <input
+              type="number"
+              min={0}
+              value={previewStart}
+              onChange={(e) => setPreviewStart(Math.max(0, Number(e.target.value) || 0))}
+            />
+          </label>
+          <label>
+            end(초)
+            <input
+              type="number"
+              min={1}
+              value={previewEnd}
+              onChange={(e) => setPreviewEnd(Math.max(1, Number(e.target.value) || 0))}
+            />
+          </label>
+          <button
+            className="btn btn-ghost"
+            style={{ width: "auto", padding: "10px 14px" }}
+            onClick={() => runRender({ start: 0, end: 60 })}
+            disabled={rendering || (!serverless && !savedPath)}
+          >
+            0~60초 미리 렌더
+          </button>
+          <button
+            className="btn btn-primary"
+            style={{ width: "auto", padding: "10px 14px" }}
+            onClick={() => runRender({ start: previewStart, end: previewEnd })}
+            disabled={rendering || (!serverless && !savedPath)}
+          >
+            {rendering ? "처리 중…" : "선택 구간 미리 렌더"}
+          </button>
+        </div>
+      </div>
 
       {/* 최종 출력 — CTA 구분:
           · 다운로드: transcript(샘플)만 있어도 항상 가능
@@ -242,16 +297,16 @@ export default function ResultsPanel({
         <div className="cta">
           <button
             className="btn btn-primary"
-            onClick={runRender}
+            onClick={() => runRender()}
             disabled={rendering || (!serverless && !savedPath)}
           >
             {rendering
               ? "⏳ 렌더링 중…"
               : serverless
-                ? "🧾 ffmpeg 명령 보기"
+                ? "🧾 ffmpeg 명령 보기(전체)"
                 : canRenderLocally
-                  ? "🎬 실제 렌더링 시작"
-                  : "🧾 ffmpeg 명령 보기"}
+                  ? "🎬 전체 렌더링 시작"
+                  : "🧾 ffmpeg 명령 보기(전체)"}
           </button>
           <span className="cta-hint">
             {serverless
@@ -259,7 +314,7 @@ export default function ResultsPanel({
               : !savedPath
                 ? "영상 서버 저장이 필요"
                 : canRenderLocally
-                  ? "1080p mp4 로 실제 렌더링"
+                  ? "전체 1080p mp4 — 긴 영상은 오래 걸림"
                   : "ffmpeg 미설치 — 명령만 확인"}
           </span>
         </div>

@@ -223,9 +223,15 @@ select {
 
 .preset-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
   margin-bottom: 20px;
+}
+
+@media (max-width: 520px) {
+  .preset-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 .preset {
@@ -622,6 +628,178 @@ select {
 .broll-reason {
   color: var(--text-mute);
   font-size: 12px;
+}
+
+/* ------------------------------- 테스트 리포트 ------------------------------- */
+
+.report {
+  background: var(--blue-lighter);
+  border: 1px solid var(--blue-light);
+  border-radius: 12px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.report-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.report-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.verdict {
+  font-size: 13px;
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 4px 12px;
+}
+
+.verdict-good {
+  background: #e3f8ef;
+  color: var(--green);
+}
+
+.verdict-many {
+  background: #fff4e0;
+  color: #b26a00;
+}
+
+.verdict-too {
+  background: #ffe9e6;
+  color: var(--red);
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+
+.report-item {
+  background: var(--surface);
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.report-item .rk {
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
+.report-item .rv {
+  font-size: 15px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.permin-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.permin {
+  font-size: 12px;
+  color: var(--text-sub);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.permin.over {
+  color: var(--red);
+  border-color: #ffc9c2;
+  background: #fff2f0;
+}
+
+@media (max-width: 600px) {
+  .report-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* ------------------------------- 테스트 구간 렌더 ------------------------------- */
+
+.preview-box {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-top: 20px;
+  background: var(--blue-lighter);
+}
+
+.preview-title {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.preview-desc {
+  font-size: 12.5px;
+  color: var(--text-sub);
+  margin: 4px 0 12px;
+}
+
+.preview-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.preview-controls label {
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  color: var(--text-mute);
+  gap: 4px;
+}
+
+.preview-controls input[type="number"] {
+  width: 90px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.preview-controls input[type="number"]:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+/* ------------------------------- 베타 체크리스트 ------------------------------- */
+
+.beta-steps {
+  list-style: none;
+  counter-reset: beta;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.beta-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 13.5px;
+  color: var(--text-sub);
+}
+
+.beta-check {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--blue);
+  border-radius: 5px;
+  margin-top: 1px;
 }
 
 .notice code {
