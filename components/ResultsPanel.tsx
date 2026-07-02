@@ -24,6 +24,10 @@ interface Props {
   serverless: boolean;
   /** 로컬 환경에서 ffmpeg 설치 여부 */
   ffmpegAvailable: boolean;
+  /** 로컬 환경에서 Whisper 설치 여부 */
+  whisperAvailable: boolean;
+  /** 영상이 서버에 업로드되어 있는지 */
+  hasVideo: boolean;
   /** 영상 없이 transcript(샘플 포함)만으로 만든 계획인지 */
   sampleMode: boolean;
   onToast: (msg: string) => void;
@@ -53,6 +57,8 @@ export default function ResultsPanel({
   savedPath,
   serverless,
   ffmpegAvailable,
+  whisperAvailable,
+  hasVideo,
   sampleMode,
   onToast,
 }: Props) {
@@ -77,10 +83,30 @@ export default function ResultsPanel({
         </div>
         <div className="empty">
           <div className="empty-emoji">🎬</div>
-          <div style={{ marginBottom: 16, fontWeight: 600 }}>
-            아직 편집 계획이 없습니다. 영상 없이 <b>transcript 만으로도</b> 바로
-            미리볼 수 있어요.
+          <div style={{ marginBottom: 12, fontWeight: 600 }}>
+            아직 편집 계획이 없습니다. <b>렌더링을 하려면 먼저 자막(transcript)이
+            필요</b>합니다.
           </div>
+
+          {/* 영상은 올렸는데 자막이 없어 막힌 상태를 명확히 안내(렌더 버튼이 안 보이는 이유) */}
+          {hasVideo && (
+            <div className="notice warn" style={{ maxWidth: 560, margin: "0 auto 16px", textAlign: "left" }}>
+              🎬 영상은 업로드됐지만 <b>자막이 없어 편집 계획이 만들어지지 않았고, 그래서
+              렌더 버튼이 나타나지 않습니다.</b> 아래 중 하나를 해주세요:
+              <ul style={{ margin: "8px 0 0 18px" }}>
+                {whisperAvailable ? (
+                  <li>왼쪽 <b>“🎙️ 영상에서 자동 자막 생성”</b> 클릭</li>
+                ) : (
+                  <li>
+                    Whisper 설치 후 자동 자막(현재 <b>미설치</b>) — 또는
+                  </li>
+                )}
+                <li>왼쪽에 <b>transcript.json 업로드</b></li>
+                <li>또는 <b>“⚡ 샘플로 편집 계획 생성”</b>으로 먼저 체험</li>
+              </ul>
+            </div>
+          )}
+
           <ol className="workflow" style={{ maxWidth: 520, margin: "0 auto", textAlign: "left" }}>
             {EMPTY_STEPS.map((t, i) => (
               <li key={i} className="workflow-step">

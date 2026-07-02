@@ -43,7 +43,12 @@ export interface RenderJob {
   error?: string;
 }
 
-const jobs = new Map<string, RenderJob>();
+// 잡 저장소는 globalThis 에 둬서, next dev 의 모듈 재컴파일(HMR)이나
+// 여러 모듈 인스턴스 사이에서도 같은 Map 을 공유하도록 한다.
+// (이게 없으면 POST 로 만든 잡을 GET 폴링이 다른 인스턴스에서 못 찾아 "잡을 찾을 수 없습니다"
+//  로 UI 가 멈출 수 있다.)
+const globalStore = globalThis as unknown as { __renderJobs?: Map<string, RenderJob> };
+const jobs: Map<string, RenderJob> = (globalStore.__renderJobs ??= new Map());
 
 // 오래된 잡 정리(메모리 누수 방지): 1시간 지난 잡 제거
 const MAX_AGE_MS = 60 * 60 * 1000;

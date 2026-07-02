@@ -116,6 +116,8 @@ export default function Home() {
           savedPath={savedPath}
           serverless={env?.serverless ?? false}
           ffmpegAvailable={env?.ffmpeg ?? false}
+          whisperAvailable={env?.whisper ?? false}
+          hasVideo={!!savedPath}
           sampleMode={sampleMode}
           onToast={setToast}
         />
