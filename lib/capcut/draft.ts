@@ -379,14 +379,79 @@ export interface WriteDraftResult {
   metaPath: string;
   segmentCount: number;
   outputDurationSec: number;
+  /** 기존 정상 프로젝트를 템플릿으로 복사했는지(권장) / 맨바닥 생성인지 */
+  usedTemplate: boolean;
+  templateName: string | null;
 }
 
 /**
- * CapCut 드래프트 폴더를 실제로 생성한다.
- * 타임라인 파일은 버전에 따라 읽는 이름이 달라서 두 이름으로 모두 쓴다:
- *  - draft_content.json … 剪映(중국판)·구버전 CapCut
- *  - draft_info.json    … 국제판 CapCut 다수 버전
- * @param draftsDir CapCut 프로젝트 루트(com.lveditor.draft). 없으면 resolveCapCutDraftsDir()로 자동.
+ * 같은 drafts 폴더 안에서 "진짜 CapCut이 만든 정상 프로젝트"를 하나 찾아 템플릿으로 쓴다.
+ * 판별: draft_content.json + draft_meta_info.json 에 더해, 우리가 만든 미니 프로젝트엔 없는
+ * draft_virtual_store.json 이 있어야 진짜로 인정(=CapCut 정품 구조). 최근 수정 우선.
+ */
+async function findTemplateDraft(draftsDir: string, excludeName: string): Promise<string | null> {
+  let entries: Array<{ name: string; isDirectory: () => boolean }>;
+  try {
+    entries = await fs.readdir(draftsDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  const candidates: Array<{ dir: string; mtime: number }> = [];
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name === excludeName) continue;
+    const dir = path.join(draftsDir, e.name);
+    try {
+      await fs.access(path.join(dir, "draft_content.json"));
+      await fs.access(path.join(dir, "draft_meta_info.json"));
+      await fs.access(path.join(dir, "draft_virtual_store.json")); // 정품 마커
+      candidates.push({ dir, mtime: (await fs.stat(dir)).mtimeMs });
+    } catch {
+      /* 정상 프로젝트 아님 → 스킵 */
+    }
+  }
+  candidates.sort((a, b) => b.mtime - a.mtime);
+  return candidates[0]?.dir ?? null;
+}
+
+/** 템플릿 프로젝트의 draft_meta_info.json 을 로드해, 우리 프로젝트용으로 필요한 값만 갈아끼운다. */
+function patchTemplateMeta(
+  templateMeta: Record<string, unknown>,
+  p: { draftName: string; draftDir: string; draftsDir: string; durationUs: number; nowMs: number; materialsSize: number },
+): Record<string, unknown> {
+  const nowUs = p.nowMs * 1000;
+  return {
+    ...templateMeta, // 버전별 알 수 없는 필드까지 전부 보존
+    cloud_draft_cover: false,
+    cloud_draft_sync: false, // 로컬 전용(클라우드 대기 상태로 잠기는 것 방지)
+    draft_cover: "",
+    draft_fold_path: toCapCutPath(p.draftDir),
+    draft_id: upperUuid(),
+    draft_materials: [
+      { type: 0, value: [] },
+      { type: 1, value: [] },
+      { type: 2, value: [] },
+      { type: 3, value: [] },
+      { type: 6, value: [] },
+      { type: 7, value: [] },
+      { type: 8, value: [] },
+    ],
+    draft_name: p.draftName,
+    draft_removable_storage_device: driveLetter(p.draftsDir),
+    draft_root_path: p.draftsDir,
+    draft_timeline_materials_size_: p.materialsSize,
+    tm_draft_create: nowUs,
+    tm_draft_modified: nowUs,
+    tm_draft_removed: 0,
+    tm_duration: p.durationUs,
+  };
+}
+
+/**
+ * CapCut 드래프트 폴더를 만든다.
+ * 우선순위:
+ *  1) 같은 폴더의 "정상 CapCut 프로젝트"를 통째로 복사(템플릿) → 타임라인만 우리 무음컷으로 교체.
+ *     (draft_virtual_store.json 등 CapCut이 요구하는 부속 파일까지 진짜 그대로라 가장 안전)
+ *  2) 템플릿이 없으면 맨바닥 생성(부속 파일 없이 3개 파일만 — 구버전/剪映에서 동작).
  */
 export async function writeCapCutDraft(
   input: DraftBuildInput,
@@ -395,9 +460,9 @@ export async function writeCapCutDraft(
 ): Promise<WriteDraftResult> {
   const name = safeDraftName(draftName);
   const draftDir = path.join(draftsDir, name);
-  await fs.mkdir(draftDir, { recursive: true });
 
   const content = buildDraftContent(input);
+  const contentJson = JSON.stringify(content, null, 4);
   const durationUs = (content.duration as number) ?? 0;
   const nowMs = Date.now();
   let materialsSize = 0;
@@ -406,23 +471,58 @@ export async function writeCapCutDraft(
   } catch {
     /* 원본 크기 못 구해도 진행 */
   }
-  const meta = buildDraftMeta({
-    draftId: upperUuid(),
-    draftName: name,
-    draftFoldPath: draftDir,
-    draftRootPath: draftsDir,
-    durationUs,
-    nowMs,
-    materialsSize,
-  });
 
-  const contentJson = JSON.stringify(content, null, 4);
+  const template = await findTemplateDraft(draftsDir, name);
+
+  // 재실행 대비: 같은 이름의 이전 결과가 있으면 지우고 새로 만든다.
+  await fs.rm(draftDir, { recursive: true, force: true });
+  await fs.mkdir(draftDir, { recursive: true });
+
   const contentPath = path.join(draftDir, "draft_content.json");
-  const infoPath = path.join(draftDir, "draft_info.json");
   const metaPath = path.join(draftDir, "draft_meta_info.json");
-  await fs.writeFile(contentPath, contentJson, "utf-8");
-  await fs.writeFile(infoPath, contentJson, "utf-8");
-  await fs.writeFile(metaPath, JSON.stringify(meta, null, 4), "utf-8");
+  let usedTemplate = false;
+  let templateName: string | null = null;
+
+  if (template) {
+    usedTemplate = true;
+    templateName = path.basename(template);
+    // 1) 정상 프로젝트 통째 복사
+    await fs.cp(template, draftDir, { recursive: true });
+    // 2) 예전 프로젝트의 흔적 제거: 썸네일(옛 화면) + 자동복구 tmp(옛 타임라인 복원 방지)
+    await removeIfExists(draftDir, ["draft_cover.jpg", "draft_cover", "template.tmp", "template-2.tmp"]);
+    // 3) 타임라인을 우리 무음컷으로 교체(있는 이름 모두)
+    await fs.writeFile(contentPath, contentJson, "utf-8");
+    for (const alt of ["draft_info.json"]) {
+      const altPath = path.join(draftDir, alt);
+      if (await pathExists(altPath)) await fs.writeFile(altPath, contentJson, "utf-8");
+    }
+    // 4) 메타는 템플릿 것을 로드해 필요한 값만 교체(버전별 필드 보존)
+    let tmeta: Record<string, unknown> = {};
+    try {
+      tmeta = JSON.parse(await fs.readFile(metaPath, "utf-8"));
+    } catch {
+      /* 손상 시 맨바닥 메타로 */
+    }
+    const meta =
+      Object.keys(tmeta).length > 0
+        ? patchTemplateMeta(tmeta, { draftName: name, draftDir, draftsDir, durationUs, nowMs, materialsSize })
+        : buildDraftMeta({ draftId: upperUuid(), draftName: name, draftFoldPath: draftDir, draftRootPath: draftsDir, durationUs, nowMs, materialsSize });
+    await fs.writeFile(metaPath, JSON.stringify(meta, null, 4), "utf-8");
+  } else {
+    // 맨바닥 생성(부속 파일 없음)
+    const meta = buildDraftMeta({
+      draftId: upperUuid(),
+      draftName: name,
+      draftFoldPath: draftDir,
+      draftRootPath: draftsDir,
+      durationUs,
+      nowMs,
+      materialsSize,
+    });
+    await fs.writeFile(contentPath, contentJson, "utf-8");
+    await fs.writeFile(path.join(draftDir, "draft_info.json"), contentJson, "utf-8");
+    await fs.writeFile(metaPath, JSON.stringify(meta, null, 4), "utf-8");
+  }
 
   const tracks = content.tracks as Array<{ segments: unknown[] }>;
   return {
@@ -432,7 +532,24 @@ export async function writeCapCutDraft(
     metaPath,
     segmentCount: tracks[0]?.segments.length ?? 0,
     outputDurationSec: Math.round((durationUs / SEC) * 1000) / 1000,
+    usedTemplate,
+    templateName,
   };
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function removeIfExists(dir: string, names: string[]): Promise<void> {
+  for (const n of names) {
+    await fs.rm(path.join(dir, n), { force: true }).catch(() => {});
+  }
 }
 
 /**

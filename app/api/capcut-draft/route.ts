@@ -168,6 +168,8 @@ export async function POST(req: Request) {
       removedSec,
       launched: launched.launched,
       launchHow: launched.how,
+      usedTemplate: result.usedTemplate,
+      templateName: result.templateName,
       message: `CapCut 프로젝트 "${result.draftName}" 생성 완료 (무음 ${fmt(removedSec)} 제거, ${result.segmentCount}조각).`,
     });
   } catch (err) {
