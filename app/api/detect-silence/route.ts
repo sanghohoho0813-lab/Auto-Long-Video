@@ -29,15 +29,14 @@ import type { TranscriptSegment } from "@/lib/types";
  * 조금→긴 침묵만, 많이→짧은 침묵까지. (기준 dB는 영상마다 자동 계산)
  */
 const MODE_PROFILE: Record<string, { minDur: number; mergeGap: number }> = {
-  gentle: { minDur: 0.6, mergeGap: 0.2 }, // 조금 (긴 침묵만)
-  normal: { minDur: 0.4, mergeGap: 0.25 }, // 보통
-  aggressive: { minDur: 0.25, mergeGap: 0.3 }, // 많이 (짧은 침묵까지)
+  gentle: { minDur: 0.6, mergeGap: 0.2 }, // 조금 (긴 침묵만, 안전장치 ON)
+  normal: { minDur: 0.4, mergeGap: 0.25 }, // 보통 (안전장치 ON)
+  aggressive: { minDur: 0.25, mergeGap: 0.3 }, // 많이 (숨소리·잡음 구간까지 컷, 안전장치 OFF)
 };
 
 // 스캔할 기준들: 최대음량(max) 대비 아래로 이만큼(dB). 잡음 바닥이 어디든 걸리게 넓게.
-// 위쪽(4)은 말소리 근처라 과감 모드가 더 자를 수 있게 포함(폭주 감지가 과다컷은 거름).
-// (병렬 실행하므로 개수를 적당히 유지)
-const SCAN_BELOW_MAX = [28, 22, 17, 13, 10, 7, 4];
+// 숨소리/말소리 사이 "무릎"을 잘 잡도록 그 근처(12~9) 해상도를 촘촘히.
+const SCAN_BELOW_MAX = [30, 24, 19, 15, 12, 9, 6];
 
 // 폭주(runaway) 감지 상수: 기준을 한 칸 올렸을 때 무음이 이 배수 이상 튀고(=조용한 말을
 // 통째로 먹기 시작) 그 증가분이 전체의 이 비율을 넘으면, 거기서부터는 "말을 먹는" 구간으로
@@ -138,35 +137,47 @@ export async function POST(req: Request) {
       duration = Math.max(...scans.map((s) => s.silences.reduce((m, r) => Math.max(m, r.end), 0)), 1) + 1;
     }
 
-    // 1) 폭주(runaway) 지점 찾기: 기준을 한 칸 올렸을 때 무음이 급증(배수↑ + 증가분이
-    //    전체의 큰 비율)하는 첫 지점. 그 지점부터는 "조용한 말"을 먹기 시작한 것으로 보고 버린다.
-    //    (scans 는 th 오름차순 = 무음 오름차순이라, 이 급증이 곧 speech-eating 신호)
-    let taintFrom = scans.length;
-    for (let i = 1; i < scans.length; i++) {
-      const prev = scans[i - 1];
-      const cur = scans[i];
-      const delta = cur.total - prev.total;
-      if (cur.total > prev.total * RUNAWAY_FACTOR && delta > duration * RUNAWAY_MIN_DELTA_FRAC) {
-        taintFrom = i;
-        break;
-      }
-    }
-    const safe = scans.slice(0, taintFrom); // 폭주 이전의 안전한 후보들(최소 1개)
-
-    // 2) 안전 후보 중에서 "가장 많이 자르는" 것 선택(상한/최소컷 조건 내).
-    const hardcap = duration * HARDCAP_FRAC; // 절대 제거 상한
     const minCut = Math.max(0.3, duration * 0.002); // 최소한 이 정도는 잘려야 "찾음"
-    const eligible = safe.filter((s) => s.total > minCut && s.total <= hardcap);
-    let chosen: Scan | null = eligible.length
-      ? eligible.reduce((a, b) => (b.total >= a.total ? b : a))
-      : null;
-    // 조건 만족이 없으면: 안전 후보 중 뭐라도 자른 것(과다컷 방지 위해 가장 적게), 그것도 없으면
-    // 전체에서 가장 적게 자른 것, 최후엔 안전 후보 최상위.
+    const mode = body.mode ?? "normal";
+
+    // 무음 곡선의 "무릎(knee)" = 기준을 올렸을 때 무음이 급증하는 지점.
+    // 보통 두 개: ① 숨소리/잡음 구간이 잘리기 시작(원하는 것) ② 진짜 말이 잘리기 시작(피해야 함).
+    const knees: number[] = [];
+    for (let i = 1; i < scans.length; i++) {
+      const delta = scans[i].total - scans[i - 1].total;
+      if (delta > duration * 0.06 && scans[i].total > scans[i - 1].total * 1.4) knees.push(i);
+    }
+
+    let chosen: Scan | null = null;
+
+    if (mode === "aggressive") {
+      // 많이: 첫 무릎(숨소리)은 넘고 두 번째 무릎(말) 앞까지 — "목소리보다 작으면 다 컷".
+      // 안전장치(runaway) 없음. 두 번째 무릎이 있으면 그 직전까지만, 없으면 상한까지 최대.
+      const cap = duration * 0.85; // 이 이상은 사실상 전체 컷이라 방지
+      const limit = knees.length >= 2 ? knees[1] - 1 : scans.length - 1;
+      const pool = scans.slice(0, limit + 1).filter((s) => s.total > minCut && s.total <= cap);
+      chosen = pool.length ? pool.reduce((a, b) => (b.total >= a.total ? b : a)) : null;
+    } else {
+      // 조금/보통: 폭주(runaway) 안전장치 ON — 조용한 '말'을 통짜로 먹는 지점 이전만 사용.
+      let taintFrom = scans.length;
+      for (let i = 1; i < scans.length; i++) {
+        const delta = scans[i].total - scans[i - 1].total;
+        if (scans[i].total > scans[i - 1].total * RUNAWAY_FACTOR && delta > duration * RUNAWAY_MIN_DELTA_FRAC) {
+          taintFrom = i;
+          break;
+        }
+      }
+      const safe = scans.slice(0, taintFrom);
+      const hardcap = duration * HARDCAP_FRAC;
+      const eligible = safe.filter((s) => s.total > minCut && s.total <= hardcap);
+      chosen = eligible.length ? eligible.reduce((a, b) => (b.total >= a.total ? b : a)) : null;
+    }
+
+    // 아무 것도 못 고르면: 뭐라도 자른 것 중 가장 적게(과다컷 방지), 최후엔 최상위.
     if (!chosen) {
       chosen =
-        safe.filter((s) => s.total > minCut).sort((a, b) => a.total - b.total)[0] ??
         scans.filter((s) => s.total > minCut).sort((a, b) => a.total - b.total)[0] ??
-        safe[safe.length - 1] ??
+        scans[scans.length - 1] ??
         scans[0];
     }
 
@@ -194,9 +205,10 @@ export async function POST(req: Request) {
       usedPadding: CUT_PADDING,
       meanVolume: mean,
       maxVolume: max,
-      // 참고: 스캔 곡선(디버그/튜닝용)과 폭주 컷오프 지점
-      scan: scans.map((s, i) => ({ th: s.th, sec: round(s.total), tainted: i >= taintFrom })),
-      runawayThreshold: taintFrom < scans.length ? scans[taintFrom].th : null,
+      // 참고: 스캔 곡선(디버그/튜닝용)과 무릎(급증) 지점 기준값
+      scan: scans.map((s) => ({ th: s.th, sec: round(s.total) })),
+      kneeThresholds: knees.map((i) => scans[i].th),
+      usedMode: mode,
       // 감지된 무음 구간(=컷 대상). 클라이언트가 이걸로 곧바로 컷 생성.
       cuts: silences.map((s) => ({ start: round(s.start), end: round(s.end) })),
       segments,
