@@ -297,7 +297,10 @@ export function buildDraftMeta(params: {
       draft_enterprise_name: "",
       enterprise_material: [],
     },
-    draft_fold_path: params.draftFoldPath,
+    // 경로 칸은 비워둔다: CapCut이 프로젝트를 발견한 "실제 위치"를 스스로 채우게 해서
+    // 경로 형식 불일치(백슬래시/슬래시/정규화 차이)로 인한 "비정상 경로" 거부를 피한다.
+    // (검증된 참조 구현이 실제로 동작하는 방식 — 경로를 직접 써넣지 않음)
+    draft_fold_path: "",
     draft_id: params.draftId,
     draft_is_ai_packaging_used: false,
     draft_is_ai_shorts: false,
@@ -318,7 +321,7 @@ export function buildDraftMeta(params: {
     draft_name: params.draftName,
     draft_new_version: "",
     draft_removable_storage_device: "",
-    draft_root_path: params.draftRootPath,
+    draft_root_path: "",
     draft_segment_extra_info: [],
     draft_type: "",
     tm_draft_cloud_completed: "",
