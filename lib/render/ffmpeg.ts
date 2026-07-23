@@ -85,20 +85,17 @@ export async function probeHasAudio(filePath: string): Promise<boolean> {
   }
 }
 
-/** volumedetect 로 평균/최대 볼륨(dB)을 측정한다(자동 무음 기준 계산용). */
+/**
+ * volumedetect 로 평균/최대 볼륨(dB)을 측정한다(자동 무음 기준 계산용).
+ * prefilter 를 주면(예: "highpass=f=120") 그 필터를 거친 뒤 측정한다.
+ */
 export async function probeMeanVolume(
   filePath: string,
+  prefilter?: string,
 ): Promise<{ mean: number | null; max: number | null }> {
   try {
-    const { stderr } = await run("ffmpeg", [
-      "-i",
-      filePath,
-      "-af",
-      "volumedetect",
-      "-f",
-      "null",
-      "-",
-    ]);
+    const af = prefilter ? `${prefilter},volumedetect` : "volumedetect";
+    const { stderr } = await run("ffmpeg", ["-i", filePath, "-af", af, "-f", "null", "-"]);
     const mean = matchDb(stderr, /mean_volume:\s*(-?[0-9.]+)\s*dB/);
     const max = matchDb(stderr, /max_volume:\s*(-?[0-9.]+)\s*dB/);
     return { mean, max };
@@ -117,16 +114,11 @@ export async function detectSilence(
   filePath: string,
   noiseDb: number,
   minDurationSec: number,
+  prefilter?: string,
 ): Promise<Array<{ start: number; end: number }>> {
-  const args = [
-    "-i",
-    filePath,
-    "-af",
-    `silencedetect=noise=${noiseDb}dB:d=${minDurationSec}`,
-    "-f",
-    "null",
-    "-",
-  ];
+  const detect = `silencedetect=noise=${noiseDb}dB:d=${minDurationSec}`;
+  const af = prefilter ? `${prefilter},${detect}` : detect;
+  const args = ["-i", filePath, "-af", af, "-f", "null", "-"];
   const { stderr } = await run("ffmpeg", args);
   return parseSilenceLog(stderr);
 }

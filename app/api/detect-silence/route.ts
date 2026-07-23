@@ -31,11 +31,15 @@ const MODE_PROFILE: Record<
   string,
   { belowMax: number; minDur: number }
 > = {
-  gentle: { belowMax: 20, minDur: 0.7 }, // 조금
-  normal: { belowMax: 16, minDur: 0.5 }, // 보통
-  aggressive: { belowMax: 12, minDur: 0.4 }, // 많이
-  max: { belowMax: 9, minDur: 0.35 }, // 아주 많이: 큰 목소리 외엔 다 컷
+  gentle: { belowMax: 18, minDur: 0.6 }, // 조금
+  normal: { belowMax: 14, minDur: 0.45 }, // 보통
+  aggressive: { belowMax: 10, minDur: 0.35 }, // 많이
+  max: { belowMax: 6, minDur: 0.3 }, // 아주 많이: 큰 목소리 외엔 다 컷
 };
+
+// 감지 전용 사전 필터: 에어컨/선풍기의 낮은 "웅~" 소리를 걷어내 무음 감지를 도움.
+// (출력 영상 오디오에는 영향 없음 — 오직 "어디를 자를지" 찾는 용도)
+const DETECT_PREFILTER = "highpass=f=120";
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, v));
@@ -95,14 +99,14 @@ export async function POST(req: Request) {
     let minDur: number;
     let meanVolume: number | null = null;
     let maxVolume: number | null = null;
+    const usePrefilter = !!body.mode; // 자동 모드에서만 저주파 제거로 감지 도움
     if (body.mode) {
       const profile = MODE_PROFILE[body.mode] ?? MODE_PROFILE.normal;
-      const { mean, max } = await probeMeanVolume(abs);
+      // 저주파(하울/팬음)를 걷어낸 뒤의 볼륨으로 기준을 잡는다(감지 신호와 일치)
+      const { mean, max } = await probeMeanVolume(abs, DETECT_PREFILTER);
       meanVolume = mean;
       maxVolume = max;
-      // 기준점은 "가장 크게 말한 소리"(max). max 없으면 평균+10 으로 근사.
       const base = max ?? (mean !== null ? mean + 10 : -10);
-      // max 보다 profile.belowMax dB 아래를 "무음"으로. 최대 -8dB 까지만(제일 큰 소리는 보존).
       noiseDb = clamp(Math.round(base - profile.belowMax), -45, -8);
       minDur = profile.minDur;
     } else {
@@ -120,7 +124,12 @@ export async function POST(req: Request) {
       }
     }
 
-    const silences = await detectSilence(abs, noiseDb, minDur);
+    const silences = await detectSilence(
+      abs,
+      noiseDb,
+      minDur,
+      usePrefilter ? DETECT_PREFILTER : undefined,
+    );
     if (!duration) {
       duration = silences.reduce((m, s) => Math.max(m, s.end), 0) + 1;
     }
