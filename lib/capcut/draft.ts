@@ -279,20 +279,35 @@ function emptyMaterialLists(): Record<string, unknown[]> {
   return out;
 }
 
-/** draft_meta_info.json 내용 — CapCut 프로젝트 목록에 뜨는 메타데이터. */
+/** 경로에서 드라이브 문자(예: "D:")를 뽑는다. 없으면 "". */
+function driveLetter(p: string): string {
+  const m = /^([A-Za-z]:)/.exec(p);
+  return m ? m[1] : "";
+}
+
+/**
+ * draft_meta_info.json 내용 — 실제 CapCut(국제판)이 쓰는 구조를 그대로 맞춘다.
+ * 실물 샘플 기준 핵심:
+ *  - draft_fold_path 는 슬래시(/), draft_root_path 는 백슬래시(\) — 둘의 표기가 다름.
+ *  - draft_removable_storage_device 에 드라이브 문자(예: "D:")를 넣음.
+ *  - 최신 버전이 확인하는 cloud/ae/web 관련 플래그 필드들을 모두 포함.
+ */
 export function buildDraftMeta(params: {
   draftId: string;
   draftName: string;
-  draftFoldPath: string;
-  draftRootPath: string;
+  draftFoldPath: string; // 네이티브(윈도우면 백슬래시) — 내부에서 슬래시로 변환
+  draftRootPath: string; // 네이티브(윈도우면 백슬래시) — 그대로 사용
   durationUs: number;
   nowMs: number;
 }): Record<string, unknown> {
+  const nowUs = params.nowMs * 1000;
   return {
+    cloud_draft_cover: true,
+    cloud_draft_sync: true,
     cloud_package_completed_time: "",
     draft_cloud_capcut_purchase_info: "",
     draft_cloud_last_action_download: false,
-    draft_cloud_materials: [],
+    draft_cloud_package_type: "",
     draft_cloud_purchase_info: "",
     draft_cloud_template_id: "",
     draft_cloud_tutorial_info: "",
@@ -305,16 +320,18 @@ export function buildDraftMeta(params: {
       draft_enterprise_name: "",
       enterprise_material: [],
     },
-    // CapCut/剪映은 Windows에서도 경로를 슬래시(/)로 기록한다. 백슬래시로 쓰거나
-    // 비워두면 "비정상 경로"로 거부되므로, 실제 위치를 슬래시 형식으로 적는다.
+    // fold_path 는 슬래시(/), root_path 는 백슬래시(\) — 실제 CapCut 표기 그대로.
     draft_fold_path: toCapCutPath(params.draftFoldPath),
     draft_id: params.draftId,
+    draft_is_ae_produce: false,
     draft_is_ai_packaging_used: false,
     draft_is_ai_shorts: false,
     draft_is_ai_translate: false,
     draft_is_article_video_draft: false,
+    draft_is_cloud_temp_draft: false,
     draft_is_from_deeplink: "false",
     draft_is_invisible: false,
+    draft_is_web_article_video: false,
     draft_materials: [
       { type: 0, value: [] },
       { type: 1, value: [] },
@@ -326,15 +343,22 @@ export function buildDraftMeta(params: {
     ],
     draft_materials_copied_info: [],
     draft_name: params.draftName,
+    draft_need_rename_folder: false,
     draft_new_version: "",
-    draft_removable_storage_device: "",
-    draft_root_path: toCapCutPath(params.draftRootPath),
+    draft_removable_storage_device: driveLetter(params.draftRootPath),
+    draft_root_path: params.draftRootPath,
     draft_segment_extra_info: [],
+    draft_timeline_materials_size_: 0,
     draft_type: "",
+    draft_web_article_video_enter_from: "",
     tm_draft_cloud_completed: "",
+    tm_draft_cloud_entry_id: -1,
     tm_draft_cloud_modified: 0,
-    tm_draft_create: params.nowMs * 1000, // 마이크로초
-    tm_draft_modified: params.nowMs * 1000,
+    tm_draft_cloud_parent_entry_id: -1,
+    tm_draft_cloud_space_id: -1,
+    tm_draft_cloud_user_id: -1,
+    tm_draft_create: nowUs,
+    tm_draft_modified: nowUs,
     tm_draft_removed: 0,
     tm_duration: params.durationUs,
   };
