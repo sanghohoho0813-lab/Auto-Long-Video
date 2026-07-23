@@ -299,11 +299,14 @@ export function buildDraftMeta(params: {
   draftRootPath: string; // 네이티브(윈도우면 백슬래시) — 그대로 사용
   durationUs: number;
   nowMs: number;
+  materialsSize?: number; // 원본 크기(바이트) — 목록에 0.0B로 안 보이게
 }): Record<string, unknown> {
   const nowUs = params.nowMs * 1000;
   return {
-    cloud_draft_cover: true,
-    cloud_draft_sync: true,
+    // 로컬 전용 프로젝트: 클라우드 동기화 플래그를 켜면 CapCut이 "클라우드에서
+    // 받아와야 할 프로젝트"로 보고 0.0B·클릭 불가로 막는다 → 반드시 false.
+    cloud_draft_cover: false,
+    cloud_draft_sync: false,
     cloud_package_completed_time: "",
     draft_cloud_capcut_purchase_info: "",
     draft_cloud_last_action_download: false,
@@ -348,7 +351,7 @@ export function buildDraftMeta(params: {
     draft_removable_storage_device: driveLetter(params.draftRootPath),
     draft_root_path: params.draftRootPath,
     draft_segment_extra_info: [],
-    draft_timeline_materials_size_: 0,
+    draft_timeline_materials_size_: params.materialsSize ?? 0,
     draft_type: "",
     draft_web_article_video_enter_from: "",
     tm_draft_cloud_completed: "",
@@ -397,6 +400,12 @@ export async function writeCapCutDraft(
   const content = buildDraftContent(input);
   const durationUs = (content.duration as number) ?? 0;
   const nowMs = Date.now();
+  let materialsSize = 0;
+  try {
+    materialsSize = (await fs.stat(input.sourceAbsPath)).size;
+  } catch {
+    /* 원본 크기 못 구해도 진행 */
+  }
   const meta = buildDraftMeta({
     draftId: upperUuid(),
     draftName: name,
@@ -404,6 +413,7 @@ export async function writeCapCutDraft(
     draftRootPath: draftsDir,
     durationUs,
     nowMs,
+    materialsSize,
   });
 
   const contentJson = JSON.stringify(content, null, 4);
