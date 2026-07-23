@@ -59,6 +59,10 @@ export default function Uploader({
   const [uploading, setUploading] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [cutting, setCutting] = useState(false);
+  const [capcutting, setCapcutting] = useState(false);
+  const [capcutInfo, setCapcutInfo] = useState<{ text: string; dir?: string; warn?: boolean } | null>(
+    null,
+  );
   const [cutMode, setCutMode] = useState<CutMode>("normal");
   const [whisperMsg, setWhisperMsg] = useState<{ text: string; hints?: string[] } | null>(
     null,
@@ -232,7 +236,77 @@ export default function Uploader({
     }
   }
 
+  /**
+   * 🎬 무음 자르고 CapCut으로 바로 열기.
+   * detect-silence 로 "남길 구간(말)"을 구한 뒤, CapCut 프로젝트(draft)를 만들고 앱을 띄운다.
+   * 렌더링(완성본 mp4)이 아니라, CapCut에서 무음이 잘린 타임라인으로 곧바로 이어 편집.
+   */
+  async function sendToCapCut() {
+    if (!savedPath) {
+      onToast("먼저 영상을 업로드하세요");
+      return;
+    }
+    setCapcutting(true);
+    setCapcutInfo(null);
+    try {
+      // 1) 무음 감지 → 남길 구간(speech segments)
+      const det = await fetch("/api/detect-silence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputPath: savedPath, mode: cutMode }),
+      });
+      const dd = await det.json();
+      if (!det.ok || dd.ok === false) {
+        onToast(dd.message || dd.error || "무음 감지 실패");
+        return;
+      }
+      const keep: Array<{ start: number; end: number }> = dd.segments ?? [];
+      // 앱 안에서도 결과 길이를 미리 볼 수 있게 반영
+      const cuts: Array<{ start: number; end: number }> = dd.cuts ?? [];
+      if (cuts.length > 0) onCutsOnly(cuts, dd.durationSec ?? 0, dd.usedPadding ?? 0.05);
+
+      // 2) CapCut 드래프트 생성 + 앱 자동 실행
+      const res = await fetch("/api/capcut-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          inputPath: savedPath,
+          keepSegments: keep,
+          durationSec: dd.durationSec ?? meta?.durationSec ?? 0,
+          width: meta?.width,
+          height: meta?.height,
+          fps: meta?.fps,
+          launch: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        if (data.needDraftsDir) {
+          setCapcutInfo({
+            text: `${data.message ?? ""} ${data.hint ?? ""}`.trim(),
+            warn: true,
+          });
+        }
+        onToast(data.message || data.error || "CapCut 드래프트 생성 실패");
+        return;
+      }
+      const removedMin = Math.round(((data.removedSec ?? 0) / 60) * 10) / 10;
+      onToast(`무음 약 ${removedMin}분 제거 → CapCut 프로젝트 생성 완료`);
+      setCapcutInfo({
+        text: data.launched
+          ? `CapCut을 실행했어요. 프로젝트 목록 맨 위 "${data.draftName}" 를 클릭하면 무음이 잘린 타임라인이 바로 열립니다.`
+          : `프로젝트 "${data.draftName}" 를 만들었어요. CapCut을 열면 목록 맨 위에 있습니다(자동 실행은 실패).`,
+        dir: data.draftDir,
+      });
+    } catch (err) {
+      onToast(`CapCut 드래프트 생성 실패: ${(err as Error).message}`);
+    } finally {
+      setCapcutting(false);
+    }
+  }
+
   const cutDisabled = cutting || serverless || !ffmpegAvailable || !savedPath;
+  const capcutDisabled = capcutting || cutting || serverless || !ffmpegAvailable || !savedPath;
 
   /** 현재 segments 를 transcript.json 으로 다운로드 */
   function downloadTranscript() {
@@ -383,9 +457,46 @@ export default function Uploader({
           ))}
         </div>
 
+        {/* 🎬 메인: 무음 자르고 CapCut으로 바로 열기 (렌더링 없음) */}
         <button
           className="btn btn-primary"
-          style={{ marginTop: 10, background: cutDisabled ? undefined : "#1b64da" }}
+          style={{ marginTop: 10, background: capcutDisabled ? undefined : "#1b64da" }}
+          onClick={sendToCapCut}
+          disabled={capcutDisabled}
+          title={
+            serverless
+              ? "CapCut 연동은 로컬(내 PC)에서만 동작"
+              : !ffmpegAvailable
+                ? "ffmpeg 가 설치되어 있지 않습니다"
+                : !savedPath
+                  ? "먼저 영상을 업로드하세요"
+                  : "무음을 잘라낸 타임라인을 CapCut 프로젝트로 만들어 바로 엽니다(렌더링 없음)"
+          }
+        >
+          {capcutting ? "🎬 CapCut 프로젝트 만드는 중…" : "🎬 무음 자르고 CapCut에서 열기"}
+        </button>
+        <div className="dropzone-hint" style={{ textAlign: "center", marginTop: 6 }}>
+          {serverless
+            ? "CapCut 연동은 로컬(내 PC)에서만 실행됩니다"
+            : !ffmpegAvailable
+              ? "ffmpeg 미설치 — 무음 컷 사용 불가"
+              : !savedPath
+                ? "영상 업로드 후 사용 가능 · Whisper 불필요"
+                : "렌더링(오래 걸림) 없이 CapCut에서 무음이 잘린 상태로 바로 이어 편집해요"}
+        </div>
+
+        {/* CapCut 결과 안내(프로젝트 위치/실행 여부) */}
+        {capcutInfo && (
+          <div className={`notice ${capcutInfo.warn ? "warn" : ""}`} style={{ marginTop: 10 }}>
+            {capcutInfo.text}
+            {capcutInfo.dir && <code>{capcutInfo.dir}</code>}
+          </div>
+        )}
+
+        {/* ✂️ 보조: 앱 안에서 결과 길이만 미리 확인(CapCut 없이도) */}
+        <button
+          className="btn btn-ghost"
+          style={{ marginTop: 10 }}
           onClick={autoCut}
           disabled={cutDisabled}
           title={
@@ -395,20 +506,11 @@ export default function Uploader({
                 ? "ffmpeg 가 설치되어 있지 않습니다"
                 : !savedPath
                   ? "먼저 영상을 업로드하세요"
-                  : "오디오 무음을 감지해 컷만 적용합니다(Whisper 불필요)"
+                  : "CapCut으로 보내기 전에 앱에서 예상 결과 길이만 미리 봅니다"
           }
         >
-          {cutting ? "✂️ 무음 감지 중…" : "✂️ 컷만 뽑기 (무음 자동 컷)"}
+          {cutting ? "✂️ 무음 감지 중…" : "✂️ 결과 미리보기 (앱에서 길이만 확인)"}
         </button>
-        <div className="dropzone-hint" style={{ textAlign: "center", marginTop: 6 }}>
-          {serverless
-            ? "무음 컷은 로컬에서만 실행됩니다"
-            : !ffmpegAvailable
-              ? "ffmpeg 미설치 — 무음 컷 사용 불가"
-              : !savedPath
-                ? "영상 업로드 후 사용 가능 · Whisper 불필요"
-                : "볼륨을 자동 분석해 기준을 잡아요(숫자 설정 불필요) · 아래 '예상 결과 길이' 확인"}
-        </div>
 
         <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={loadSample}>
           ⚡ 샘플로 편집 계획 생성

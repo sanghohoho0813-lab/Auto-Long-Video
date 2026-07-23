@@ -17,11 +17,11 @@ interface Props {
 
 const WORKFLOW: Array<{ n: number; text: string; optional?: boolean }> = [
   { n: 1, text: "mp4 영상 업로드", optional: true },
-  { n: 2, text: "🎙️ 영상에서 자동 자막 생성(로컬) · transcript.json 업로드 · 샘플" },
-  { n: 3, text: "편집 강도 프리셋 · 세부 설정 선택" },
-  { n: 4, text: "편집 계획 자동 생성 (타임라인 · 편집 리스트 미리보기)" },
-  { n: 5, text: "edit-plan.json 다운로드" },
-  { n: 6, text: "로컬 ffmpeg 로 실제 1080p 렌더링(또는 별도 렌더 워커)" },
+  { n: 2, text: "🎬 무음 자르고 CapCut에서 열기 — 렌더링 없이 바로 이어 편집(로컬)" },
+  { n: 3, text: "🎙️ 영상에서 자동 자막 생성(로컬) · transcript.json 업로드 · 샘플" },
+  { n: 4, text: "편집 강도 프리셋 · 세부 설정 선택" },
+  { n: 5, text: "편집 계획 자동 생성 (타임라인 · 편집 리스트 미리보기)" },
+  { n: 6, text: "edit-plan.json 다운로드 · 로컬 ffmpeg 로 실제 1080p 렌더링" },
 ];
 
 const CAN_BASE: string[] = [
@@ -53,6 +53,8 @@ export default function HelpPanel({ serverless, ffmpegAvailable, whisperAvailabl
     );
   } else {
     // 로컬: 설치 여부에 따라 가능/제한 배치
+    if (ffmpegAvailable)
+      can.push("🎬 무음 자르고 CapCut 프로젝트로 바로 열기(렌더링 없이 이어 편집)");
     if (ffmpegAvailable) can.push("실제 1080p ffmpeg 렌더링 + 결과 mp4 다운로드");
     else cannot.push({ text: "실제 ffmpeg 렌더링", plan: "ffmpeg 설치 후 사용 가능(명령은 확인 가능)" });
 
