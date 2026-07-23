@@ -486,10 +486,28 @@ export async function writeCapCutDraft(
   if (template) {
     usedTemplate = true;
     templateName = path.basename(template);
-    // 1) 정상 프로젝트 통째 복사
+    // 1) 정상 프로젝트 통째 복사(부속 파일 구조 확보)
     await fs.cp(template, draftDir, { recursive: true });
-    // 2) 예전 프로젝트의 흔적 제거: 썸네일(옛 화면) + 자동복구 tmp(옛 타임라인 복원 방지)
-    await removeIfExists(draftDir, ["draft_cover.jpg", "draft_cover", "template.tmp", "template-2.tmp"]);
+    // 2) 예전 프로젝트에 종속된 흔적 제거 — 이게 없으면 "옛 영상 캐시 vs 새 타임라인"
+    //    충돌로 프로젝트가 깨진다(재생 하양·삭제 불가·재열기 불가).
+    //    - 썸네일/자동복구 tmp: 옛 화면·옛 타임라인 복원 방지
+    //    - material 캐시 서브폴더: 옛 영상의 렌더/메타 데이터
+    await removeIfExists(draftDir, [
+      "draft_cover.jpg",
+      "draft_cover",
+      "template.tmp",
+      "template-2.tmp",
+      "Resources",
+      "common_attachment",
+      "matting",
+      "smart_crop",
+      "adjust_mask",
+      "qr_upload",
+      "subdraft",
+    ]);
+    // 옛 타임라인/소재 상태를 담은 파일은 최소 구조로 리셋 → CapCut이 우리 타임라인 기준으로 재생성
+    await resetIfExists(path.join(draftDir, "draft_virtual_store.json"), MIN_VIRTUAL_STORE);
+    await resetIfExists(path.join(draftDir, "key_value.json"), "{}");
     // 3) 타임라인을 우리 무음컷으로 교체(있는 이름 모두)
     await fs.writeFile(contentPath, contentJson, "utf-8");
     for (const alt of ["draft_info.json"]) {
@@ -548,8 +566,23 @@ async function pathExists(p: string): Promise<boolean> {
 
 async function removeIfExists(dir: string, names: string[]): Promise<void> {
   for (const n of names) {
-    await fs.rm(path.join(dir, n), { force: true }).catch(() => {});
+    await fs.rm(path.join(dir, n), { recursive: true, force: true }).catch(() => {});
   }
+}
+
+/** 빈/최소 CapCut virtual store — 소재 상태를 우리 타임라인 기준으로 재생성하게 한다. */
+const MIN_VIRTUAL_STORE = JSON.stringify({
+  draft_materials: [],
+  draft_virtual_store: [
+    { type: 0, value: [] },
+    { type: 1, value: [] },
+    { type: 2, value: [] },
+  ],
+});
+
+/** 파일이 있으면 주어진 내용으로 덮어쓴다(없으면 아무 것도 안 함). */
+async function resetIfExists(p: string, content: string): Promise<void> {
+  if (await pathExists(p)) await fs.writeFile(p, content, "utf-8").catch(() => {});
 }
 
 /**
