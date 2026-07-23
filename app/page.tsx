@@ -104,6 +104,7 @@ export default function Home() {
           whisperAvailable={env?.whisper ?? false}
           whisperBackend={env?.whisperBackend ?? null}
           ffmpegAvailable={env?.ffmpeg ?? false}
+          cutSettings={settings.cut}
           onVideo={(m, p) => {
             setMeta(m);
             setSavedPath(p);

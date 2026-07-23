@@ -9,7 +9,7 @@
  */
 
 import { useRef, useState } from "react";
-import type { TranscriptSegment, VideoMeta } from "@/lib/types";
+import type { EditSettings, TranscriptSegment, VideoMeta } from "@/lib/types";
 import { parseTranscript } from "@/lib/analysis/transcript";
 
 interface Props {
@@ -20,6 +20,8 @@ interface Props {
   whisperAvailable: boolean;
   whisperBackend: string | null;
   ffmpegAvailable: boolean;
+  /** 무음 감지 컷에 사용할 현재 컷 설정(임계값/최소 무음 길이) */
+  cutSettings: EditSettings["cut"];
   onVideo: (meta: VideoMeta, savedPath: string | null) => void;
   onTranscript: (segments: TranscriptSegment[]) => void;
   /** 무음 감지 컷: speech 구간을 세그먼트로 넘겨 "컷만" 모드로 전환 */
@@ -35,6 +37,7 @@ export default function Uploader({
   whisperAvailable,
   whisperBackend,
   ffmpegAvailable,
+  cutSettings,
   onVideo,
   onTranscript,
   onCutsOnly,
@@ -181,7 +184,12 @@ export default function Uploader({
       const res = await fetch("/api/detect-silence", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ inputPath: savedPath }),
+        body: JSON.stringify({
+          inputPath: savedPath,
+          // 설정 패널의 무음 임계값 / 최소 무음 길이를 실제로 반영
+          silenceThreshold: cutSettings.silenceThreshold,
+          minSilenceDuration: cutSettings.minSilenceDuration,
+        }),
       });
       const data = await res.json();
       if (!res.ok || data.ok === false) {
