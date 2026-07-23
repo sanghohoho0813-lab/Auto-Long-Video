@@ -32,11 +32,12 @@ interface Props {
   onToast: (msg: string) => void;
 }
 
-type CutMode = "gentle" | "normal" | "aggressive";
+type CutMode = "gentle" | "normal" | "aggressive" | "max";
 const CUT_MODE_LABEL: Record<CutMode, string> = {
   gentle: "조금",
   normal: "보통",
   aggressive: "많이",
+  max: "아주 많이",
 };
 
 export default function Uploader({
@@ -214,7 +215,16 @@ export default function Uploader({
         minSilenceDuration: data.usedMinDuration ?? cutSettings.minSilenceDuration,
       });
       const removedMin = Math.round(((data.removedSec ?? 0) / 60) * 10) / 10;
-      onToast(`무음 ${data.silenceCount}곳 감지 · 약 ${removedMin}분 제거 예상`);
+      const th = data.usedThreshold != null ? ` · 기준 ${data.usedThreshold}dB` : "";
+      onToast(`무음 ${data.silenceCount}곳 · 약 ${removedMin}분 제거 예상${th}`);
+      if ((data.removedSec ?? 0) < 5) {
+        // 거의 안 잘리면 더 센 모드를 권유
+        setTimeout(
+          () =>
+            onToast("거의 안 잘렸어요 — 위에서 '아주 많이'로 바꿔 다시 눌러보세요"),
+          2700,
+        );
+      }
       setTimeout(() => {
         document
           .getElementById("results")
@@ -366,7 +376,7 @@ export default function Uploader({
           얼마나 자를까요?
         </div>
         <div className="cutmode-row">
-          {(["gentle", "normal", "aggressive"] as CutMode[]).map((m) => (
+          {(["gentle", "normal", "aggressive", "max"] as CutMode[]).map((m) => (
             <button
               key={m}
               className={`cutmode ${cutMode === m ? "active" : ""}`}

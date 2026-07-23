@@ -779,15 +779,15 @@ select {
 
 .cutmode-row {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
 }
 
 .cutmode {
   border: 1.5px solid var(--border);
   border-radius: 10px;
-  padding: 9px 0;
-  font-size: 14px;
+  padding: 9px 2px;
+  font-size: 13px;
   font-weight: 700;
   background: var(--surface);
   color: var(--text-sub);

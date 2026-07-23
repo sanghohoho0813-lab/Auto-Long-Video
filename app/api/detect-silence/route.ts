@@ -22,14 +22,19 @@ import {
 } from "@/lib/render/ffmpeg";
 import type { TranscriptSegment } from "@/lib/types";
 
-/** "얼마나 자를지" 모드 → 평균볼륨 대비 오프셋(dB) + 최소 무음 길이(초) */
+/**
+ * "얼마나 자를지" 모드 → 내 최대 음량(max) 대비 몇 dB 아래를 무음으로 볼지 + 최소 무음 길이.
+ * 평균이 아니라 "가장 크게 말한 소리" 기준이라, 배경 잡음이 깔려도 큰 목소리만 남긴다.
+ * belowMax 가 작을수록(=기준이 높을수록) 더 공격적으로 잘림.
+ */
 const MODE_PROFILE: Record<
   string,
-  { below: number; minDur: number }
+  { belowMax: number; minDur: number }
 > = {
-  gentle: { below: 10, minDur: 0.7 }, // 조금: 확실히 조용할 때만
-  normal: { below: 6, minDur: 0.5 }, // 보통
-  aggressive: { below: 3, minDur: 0.35 }, // 많이: 짧은 쉼까지
+  gentle: { belowMax: 20, minDur: 0.7 }, // 조금
+  normal: { belowMax: 16, minDur: 0.5 }, // 보통
+  aggressive: { belowMax: 12, minDur: 0.4 }, // 많이
+  max: { belowMax: 9, minDur: 0.35 }, // 아주 많이: 큰 목소리 외엔 다 컷
 };
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -45,7 +50,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       inputPath?: string;
       // 자동 모드(권장): 볼륨 분석 후 기준 자동 결정
-      mode?: "gentle" | "normal" | "aggressive";
+      mode?: "gentle" | "normal" | "aggressive" | "max";
       // 수동 모드(고급): 직접 dB/초 지정
       silenceThreshold?: number;
       minSilenceDuration?: number;
@@ -89,13 +94,16 @@ export async function POST(req: Request) {
     let noiseDb: number;
     let minDur: number;
     let meanVolume: number | null = null;
+    let maxVolume: number | null = null;
     if (body.mode) {
       const profile = MODE_PROFILE[body.mode] ?? MODE_PROFILE.normal;
-      const { mean } = await probeMeanVolume(abs);
+      const { mean, max } = await probeMeanVolume(abs);
       meanVolume = mean;
-      const base = mean ?? -20; // 측정 실패 시 무난한 기본
-      // 평균볼륨보다 profile.below dB 아래를 "무음"으로 (조용한 말은 안 자르게 범위 제한)
-      noiseDb = clamp(Math.round(base - profile.below), -45, -14);
+      maxVolume = max;
+      // 기준점은 "가장 크게 말한 소리"(max). max 없으면 평균+10 으로 근사.
+      const base = max ?? (mean !== null ? mean + 10 : -10);
+      // max 보다 profile.belowMax dB 아래를 "무음"으로. 최대 -8dB 까지만(제일 큰 소리는 보존).
+      noiseDb = clamp(Math.round(base - profile.belowMax), -45, -8);
       minDur = profile.minDur;
     } else {
       noiseDb = body.silenceThreshold ?? -30;
@@ -138,6 +146,7 @@ export async function POST(req: Request) {
       usedThreshold: noiseDb,
       usedMinDuration: minDur,
       meanVolume,
+      maxVolume,
       segments,
       silences: silences.map((s) => ({ start: round(s.start), end: round(s.end) })),
     });
