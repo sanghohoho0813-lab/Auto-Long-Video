@@ -15,7 +15,7 @@
 
 import { NextResponse } from "next/server";
 import path from "node:path";
-import { access } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { STORAGE_ROOT, ensureStorage } from "@/lib/storage";
 import { isServerless } from "@/lib/env";
 import { checkFfmpeg, probeVideo } from "@/lib/render/ffmpeg";
@@ -101,18 +101,35 @@ export async function POST(req: Request) {
       );
     }
 
-    // CapCut 프로젝트 폴더 찾기
-    const draftsDir = await resolveCapCutDraftsDir(body.draftsDir ?? null);
+    // CapCut 프로젝트 폴더 찾기.
+    // 사용자가 폴더를 직접 지정했으면 그 폴더가 실제로 존재하는지 확인하고 그대로 사용한다
+    // (저장 위치를 옮긴 경우 — 예: D:\CapCut Drafts — 자동 탐지로는 못 찾으므로 이게 권위).
+    let draftsDir: string | null;
+    if (body.draftsDir && body.draftsDir.trim()) {
+      const wanted = body.draftsDir.trim();
+      try {
+        if (!(await stat(wanted)).isDirectory()) throw new Error("not dir");
+        draftsDir = wanted;
+      } catch {
+        return NextResponse.json({
+          ok: false,
+          needDraftsDir: true,
+          message: `지정한 CapCut 폴더를 찾을 수 없습니다: ${wanted} — 경로를 다시 확인하세요(폴더가 실제로 존재해야 합니다).`,
+        });
+      }
+    } else {
+      draftsDir = await resolveCapCutDraftsDir(null);
+    }
     if (!draftsDir) {
       return NextResponse.json({
         ok: false,
         needDraftsDir: true,
         message:
-          "CapCut 프로젝트 폴더를 찾지 못했습니다. CapCut(데스크톱)이 설치되어 있는지 확인하거나, 폴더 경로를 직접 지정하세요.",
+          "CapCut 프로젝트 폴더를 자동으로 찾지 못했습니다. 아래 입력칸에 CapCut 저장 폴더 경로를 직접 넣어주세요.",
         hint:
           process.platform === "win32"
-            ? "보통 %LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft 입니다."
-            : "CapCut 데스크톱 설치 위치의 User Data/Projects/com.lveditor.draft 를 지정하세요.",
+            ? "기본은 %LOCALAPPDATA%\\CapCut\\User Data\\Projects\\com.lveditor.draft 이고, 저장 위치를 옮겼다면 그 폴더(예: D:\\CapCut Drafts)를 넣으세요."
+            : "CapCut 데스크톱 저장 폴더 경로를 넣으세요.",
       });
     }
 

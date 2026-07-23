@@ -8,7 +8,7 @@
  * - transcript.json 을 읽어 파싱한다.
  */
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { EditSettings, TranscriptSegment, VideoMeta } from "@/lib/types";
 import { parseTranscript } from "@/lib/analysis/transcript";
 
@@ -63,7 +63,14 @@ export default function Uploader({
   const [capcutInfo, setCapcutInfo] = useState<{ text: string; dir?: string; warn?: boolean } | null>(
     null,
   );
+  // CapCut 저장 위치를 옮긴 사용자(예: D:\CapCut Drafts)를 위한 폴더 지정. localStorage에 기억.
+  const [draftsDir, setDraftsDir] = useState("");
   const [cutMode, setCutMode] = useState<CutMode>("normal");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("capcutDraftsDir");
+    if (saved) setDraftsDir(saved);
+  }, []);
   const [whisperMsg, setWhisperMsg] = useState<{ text: string; hints?: string[] } | null>(
     null,
   );
@@ -276,6 +283,7 @@ export default function Uploader({
           width: meta?.width,
           height: meta?.height,
           fps: meta?.fps,
+          draftsDir: draftsDir.trim() || undefined,
           launch: true,
         }),
       });
@@ -298,6 +306,11 @@ export default function Uploader({
           : `프로젝트 "${data.draftName}" 를 만들었어요. CapCut을 열면 목록 맨 위에 있습니다(자동 실행은 실패).`,
         dir: data.draftDir,
       });
+      // 성공한 폴더를 기억(다음부턴 자동)
+      if (data.draftsDir) {
+        setDraftsDir(data.draftsDir);
+        localStorage.setItem("capcutDraftsDir", data.draftsDir);
+      }
     } catch (err) {
       onToast(`CapCut 드래프트 생성 실패: ${(err as Error).message}`);
     } finally {
@@ -483,6 +496,32 @@ export default function Uploader({
               : !savedPath
                 ? "영상 업로드 후 사용 가능 · Whisper 불필요"
                 : "렌더링(오래 걸림) 없이 CapCut에서 무음이 잘린 상태로 바로 이어 편집해요"}
+        </div>
+
+        {/* CapCut 저장 폴더 지정(선택) — 저장 위치를 옮긴 사용자용 (예: D:\CapCut Drafts) */}
+        <div style={{ marginTop: 8 }}>
+          <input
+            type="text"
+            value={draftsDir}
+            spellCheck={false}
+            onChange={(e) => {
+              setDraftsDir(e.target.value);
+              localStorage.setItem("capcutDraftsDir", e.target.value);
+            }}
+            placeholder="CapCut 프로젝트 폴더 (자동으로 못 찾을 때만, 예: D:\\CapCut Drafts)"
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              fontSize: 12,
+              border: "1px solid #d5dbe6",
+              borderRadius: 8,
+              boxSizing: "border-box",
+            }}
+          />
+          <div className="dropzone-hint" style={{ marginTop: 4 }}>
+            CapCut 저장 위치를 옮겼다면(예: D드라이브) 그 폴더 경로를 붙여넣으세요. 한 번
+            넣으면 기억됩니다.
+          </div>
         </div>
 
         {/* CapCut 결과 안내(프로젝트 위치/실행 여부) */}
