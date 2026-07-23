@@ -775,6 +775,40 @@ select {
   border-color: var(--blue);
 }
 
+/* ------------------------------- 컷 강도(조금/보통/많이) ------------------------------- */
+
+.cutmode-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.cutmode {
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  padding: 9px 0;
+  font-size: 14px;
+  font-weight: 700;
+  background: var(--surface);
+  color: var(--text-sub);
+  transition: all 0.12s ease;
+}
+
+.cutmode:hover:not(:disabled) {
+  border-color: var(--blue);
+}
+
+.cutmode.active {
+  border-color: var(--blue);
+  background: var(--blue-light);
+  color: var(--blue-dark);
+}
+
+.cutmode:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* ------------------------------- 베타 체크리스트 ------------------------------- */
 
 .beta-steps {

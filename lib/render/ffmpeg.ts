@@ -85,6 +85,33 @@ export async function probeHasAudio(filePath: string): Promise<boolean> {
   }
 }
 
+/** volumedetect 로 평균/최대 볼륨(dB)을 측정한다(자동 무음 기준 계산용). */
+export async function probeMeanVolume(
+  filePath: string,
+): Promise<{ mean: number | null; max: number | null }> {
+  try {
+    const { stderr } = await run("ffmpeg", [
+      "-i",
+      filePath,
+      "-af",
+      "volumedetect",
+      "-f",
+      "null",
+      "-",
+    ]);
+    const mean = matchDb(stderr, /mean_volume:\s*(-?[0-9.]+)\s*dB/);
+    const max = matchDb(stderr, /max_volume:\s*(-?[0-9.]+)\s*dB/);
+    return { mean, max };
+  } catch {
+    return { mean: null, max: null };
+  }
+}
+
+function matchDb(s: string, re: RegExp): number | null {
+  const m = s.match(re);
+  return m ? Number(m[1]) : null;
+}
+
 /** silencedetect 로 무음 구간을 감지한다(정밀 컷용, 향후 연동). */
 export async function detectSilence(
   filePath: string,

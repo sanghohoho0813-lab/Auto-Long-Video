@@ -24,10 +24,20 @@ interface Props {
   cutSettings: EditSettings["cut"];
   onVideo: (meta: VideoMeta, savedPath: string | null) => void;
   onTranscript: (segments: TranscriptSegment[]) => void;
-  /** 무음 감지 컷: speech 구간을 세그먼트로 넘겨 "컷만" 모드로 전환 */
-  onCutsOnly: (segments: TranscriptSegment[]) => void;
+  /** 무음 감지 컷: speech 구간 + 사용된 컷 기준을 넘겨 "컷만" 모드로 전환 */
+  onCutsOnly: (
+    segments: TranscriptSegment[],
+    cutParams: { silenceThreshold: number; minSilenceDuration: number },
+  ) => void;
   onToast: (msg: string) => void;
 }
+
+type CutMode = "gentle" | "normal" | "aggressive";
+const CUT_MODE_LABEL: Record<CutMode, string> = {
+  gentle: "조금",
+  normal: "보통",
+  aggressive: "많이",
+};
 
 export default function Uploader({
   meta,
@@ -48,6 +58,7 @@ export default function Uploader({
   const [uploading, setUploading] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [cutting, setCutting] = useState(false);
+  const [cutMode, setCutMode] = useState<CutMode>("aggressive");
   const [whisperMsg, setWhisperMsg] = useState<{ text: string; hints?: string[] } | null>(
     null,
   );
@@ -184,12 +195,8 @@ export default function Uploader({
       const res = await fetch("/api/detect-silence", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          inputPath: savedPath,
-          // 설정 패널의 무음 임계값 / 최소 무음 길이를 실제로 반영
-          silenceThreshold: cutSettings.silenceThreshold,
-          minSilenceDuration: cutSettings.minSilenceDuration,
-        }),
+        // 자동 모드: 볼륨 분석 후 기준을 앱이 알아서 정함(사용자는 조금/보통/많이만 선택)
+        body: JSON.stringify({ inputPath: savedPath, mode: cutMode }),
       });
       const data = await res.json();
       if (!res.ok || data.ok === false) {
@@ -197,11 +204,17 @@ export default function Uploader({
         return;
       }
       if (!data.segments || data.segments.length === 0) {
-        onToast("말이 있는 구간을 찾지 못했습니다(오디오 확인)");
+        onToast(
+          "잘라낼 무음을 찾지 못했어요. '많이'로 바꿔서 다시 눌러보세요.",
+        );
         return;
       }
-      onCutsOnly(data.segments);
-      onToast(`무음 ${data.silenceCount}구간 감지 → 컷만 편집 계획 생성`);
+      onCutsOnly(data.segments, {
+        silenceThreshold: data.usedThreshold ?? cutSettings.silenceThreshold,
+        minSilenceDuration: data.usedMinDuration ?? cutSettings.minSilenceDuration,
+      });
+      const removedMin = Math.round(((data.removedSec ?? 0) / 60) * 10) / 10;
+      onToast(`무음 ${data.silenceCount}곳 감지 · 약 ${removedMin}분 제거 예상`);
       setTimeout(() => {
         document
           .getElementById("results")
@@ -348,6 +361,23 @@ export default function Uploader({
         </div>
 
         {/* ✂️ 무음 자동 컷 — Whisper 없이 컷만 뽑기(캡컷용) */}
+        {/* 얼마나 자를지: 조금 / 보통 / 많이 (숫자 대신 이거만 고르면 됨) */}
+        <div style={{ marginTop: 14, marginBottom: 2, fontSize: 13, fontWeight: 700 }}>
+          얼마나 자를까요?
+        </div>
+        <div className="cutmode-row">
+          {(["gentle", "normal", "aggressive"] as CutMode[]).map((m) => (
+            <button
+              key={m}
+              className={`cutmode ${cutMode === m ? "active" : ""}`}
+              onClick={() => setCutMode(m)}
+              disabled={cutting}
+            >
+              {CUT_MODE_LABEL[m]}
+            </button>
+          ))}
+        </div>
+
         <button
           className="btn btn-primary"
           style={{ marginTop: 10, background: cutDisabled ? undefined : "#1b64da" }}
@@ -372,7 +402,7 @@ export default function Uploader({
               ? "ffmpeg 미설치 — 무음 컷 사용 불가"
               : !savedPath
                 ? "영상 업로드 후 사용 가능 · Whisper 불필요"
-                : "자막·효과 없이 무음만 제거 → 캡컷에 바로 넣기 좋아요"}
+                : "볼륨을 자동 분석해 기준을 잡아요(숫자 설정 불필요) · 아래 '예상 결과 길이' 확인"}
         </div>
 
         <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={loadSample}>

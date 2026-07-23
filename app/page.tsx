@@ -110,10 +110,15 @@ export default function Home() {
             setSavedPath(p);
           }}
           onTranscript={setSegments}
-          onCutsOnly={(segs) => {
-            // 무음 감지 결과(speech 구간)를 세그먼트로 넣고 "컷만" 설정으로 전환
+          onCutsOnly={(segs, cutParams) => {
+            // 무음 감지 결과(speech 구간)를 세그먼트로 넣고 "컷만" 설정으로 전환.
+            // 감지에 실제로 쓰인 기준(임계값/최소 무음 길이)을 편집 계획에도 그대로 반영해야
+            // findGaps 가 감지된 무음을 동일하게 컷으로 만든다.
             setSegments(segs);
-            setSettings((prev) => cutsOnlySettings(prev));
+            setSettings((prev) => {
+              const co = cutsOnlySettings(prev);
+              return { ...co, cut: { ...co.cut, ...cutParams } };
+            });
           }}
           onToast={setToast}
         />

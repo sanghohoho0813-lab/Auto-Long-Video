@@ -14,8 +14,27 @@ import path from "node:path";
 import { access } from "node:fs/promises";
 import { STORAGE_ROOT, ensureStorage } from "@/lib/storage";
 import { isServerless } from "@/lib/env";
-import { checkFfmpeg, probeVideo, detectSilence } from "@/lib/render/ffmpeg";
+import {
+  checkFfmpeg,
+  probeVideo,
+  detectSilence,
+  probeMeanVolume,
+} from "@/lib/render/ffmpeg";
 import type { TranscriptSegment } from "@/lib/types";
+
+/** "얼마나 자를지" 모드 → 평균볼륨 대비 오프셋(dB) + 최소 무음 길이(초) */
+const MODE_PROFILE: Record<
+  string,
+  { below: number; minDur: number }
+> = {
+  gentle: { below: 10, minDur: 0.7 }, // 조금: 확실히 조용할 때만
+  normal: { below: 6, minDur: 0.5 }, // 보통
+  aggressive: { below: 3, minDur: 0.35 }, // 많이: 짧은 쉼까지
+};
+
+function clamp(v: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, v));
+}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +44,9 @@ export async function POST(req: Request) {
   try {
     const body = (await req.json()) as {
       inputPath?: string;
+      // 자동 모드(권장): 볼륨 분석 후 기준 자동 결정
+      mode?: "gentle" | "normal" | "aggressive";
+      // 수동 모드(고급): 직접 dB/초 지정
       silenceThreshold?: number;
       minSilenceDuration?: number;
     };
@@ -63,8 +85,22 @@ export async function POST(req: Request) {
       });
     }
 
-    const noiseDb = body.silenceThreshold ?? -30;
-    const minDur = body.minSilenceDuration ?? 0.6;
+    // 자동 모드: 영상 볼륨을 분석해 기준을 스스로 정한다(사용자가 dB 몰라도 됨)
+    let noiseDb: number;
+    let minDur: number;
+    let meanVolume: number | null = null;
+    if (body.mode) {
+      const profile = MODE_PROFILE[body.mode] ?? MODE_PROFILE.normal;
+      const { mean } = await probeMeanVolume(abs);
+      meanVolume = mean;
+      const base = mean ?? -20; // 측정 실패 시 무난한 기본
+      // 평균볼륨보다 profile.below dB 아래를 "무음"으로 (조용한 말은 안 자르게 범위 제한)
+      noiseDb = clamp(Math.round(base - profile.below), -45, -14);
+      minDur = profile.minDur;
+    } else {
+      noiseDb = body.silenceThreshold ?? -30;
+      minDur = body.minSilenceDuration ?? 0.6;
+    }
 
     // 길이 파악(ffprobe 없으면 무음 마지막 지점으로 근사)
     let duration = 0;
@@ -90,12 +126,19 @@ export async function POST(req: Request) {
       text: "",
     }));
 
+    // 제거 예상 총량(패딩 고려 전 대략치)
+    const removedSec = silences.reduce((sum, s) => sum + (s.end - s.start), 0);
+
     return NextResponse.json({
       ok: true,
       durationSec: round(duration),
       silenceCount: silences.length,
+      removedSec: round(removedSec),
+      // 클라이언트가 편집 계획에 동일하게 반영하도록 사용된 기준을 함께 반환
+      usedThreshold: noiseDb,
+      usedMinDuration: minDur,
+      meanVolume,
       segments,
-      // 컷 후보(silence 구간)도 참고용으로 반환
       silences: silences.map((s) => ({ start: round(s.start), end: round(s.end) })),
     });
   } catch (err) {
