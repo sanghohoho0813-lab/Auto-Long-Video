@@ -300,16 +300,14 @@ export default function Uploader({
       }
       const removedMin = Math.round(((data.removedSec ?? 0) / 60) * 10) / 10;
       onToast(`무음 약 ${removedMin}분 제거 → CapCut 프로젝트 생성 완료`);
-      const tmplNote = data.usedTemplate
-        ? ` (기존 프로젝트 "${data.templateName}" 구조를 복사해 만들었어요)`
-        : " (참고: 기존 CapCut 프로젝트가 없어 기본 구조로 만들었어요 — 안 열리면 CapCut에서 프로젝트를 하나 만든 뒤 다시 시도하세요)";
       setCapcutInfo({
         text:
           (data.launched
-            ? `CapCut을 실행했어요. 프로젝트 목록 맨 위 "${data.draftName}" 를 클릭하면 무음이 잘린 타임라인이 바로 열립니다.`
-            : `프로젝트 "${data.draftName}" 를 만들었어요. CapCut을 열면 목록 맨 위에 있습니다(자동 실행은 실패).`) +
-          tmplNote,
+            ? `CapCut을 실행했어요. 프로젝트 목록 맨 위 "${data.draftName}" 를 클릭해보세요.`
+            : `프로젝트 "${data.draftName}" 를 만들었어요.`) +
+          " ⚠️ 이 CapCut 직접 열기는 실험 기능이라 형님 CapCut 버전에서 안 열리거나 튕길 수 있어요. 그럴 땐 아래로 내려가 '전체 렌더링 시작'으로 mp4를 받아 CapCut에 드래그하세요(이 방법은 확실합니다).",
         dir: data.draftDir,
+        warn: true,
       });
       // 성공한 폴더를 기억(다음부턴 자동)
       if (data.draftsDir) {

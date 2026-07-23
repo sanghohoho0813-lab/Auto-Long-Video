@@ -221,7 +221,7 @@ export function buildFfmpegArgs(
   comp: RenderComposition,
   inputPath: string,
   outputPath: string,
-  opts: { progress?: boolean; clip?: { start: number; duration: number } } = {},
+  opts: { progress?: boolean; clip?: { start: number; duration: number }; fast?: boolean } = {},
 ): string[] {
   const args = ["-y"];
   // 진행률 파싱용(stderr 로 기계가 읽기 좋은 key=value 출력)
@@ -237,13 +237,15 @@ export function buildFfmpegArgs(
   args.push("-map", comp.videoLabel);
   if (comp.audioLabel) args.push("-map", comp.audioLabel);
 
+  // fast=무음 컷만(효과 없음) → 속도 우선. CapCut에서 이어 편집할 중간 파일이라
+  // 화질을 조금 낮추고 인코딩을 크게 빠르게 한다(긴 영상 렌더 시간 대폭 단축).
   args.push(
     "-c:v",
     "libx264",
     "-preset",
-    "medium",
+    opts.fast ? "veryfast" : "medium",
     "-crf",
-    "18",
+    opts.fast ? "20" : "18",
     "-pix_fmt",
     "yuv420p",
     "-r",
@@ -345,10 +347,14 @@ export async function renderPlan(
     await writeFile(path.join(outputDir, comp.assFileName), comp.assContent, "utf8");
   }
 
+  // 무음 컷만 있는 계획이면(효과 없음) 빠른 인코딩 사용 → 긴 영상도 훨씬 빨리 끝남.
+  const cutsOnly = plan.events.length > 0 && plan.events.every((e) => e.type === "cut");
+
   // ffmpeg 는 진행률 파싱을 위해 -progress pipe:2(=stderr) 를 추가한다.
   const args = buildFfmpegArgs(comp, inputPath, outputPath, {
     progress: true,
     clip: options.clip,
+    fast: cutsOnly,
   });
   const command = `ffmpeg ${args.map(shellQuote).join(" ")}`;
   const outDur = comp.outputDurationSec || plan.stats.originalDurationSec || 1;
