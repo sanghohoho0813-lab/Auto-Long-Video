@@ -19,8 +19,11 @@ interface Props {
   serverless: boolean;
   whisperAvailable: boolean;
   whisperBackend: string | null;
+  ffmpegAvailable: boolean;
   onVideo: (meta: VideoMeta, savedPath: string | null) => void;
   onTranscript: (segments: TranscriptSegment[]) => void;
+  /** 무음 감지 컷: speech 구간을 세그먼트로 넘겨 "컷만" 모드로 전환 */
+  onCutsOnly: (segments: TranscriptSegment[]) => void;
   onToast: (msg: string) => void;
 }
 
@@ -31,14 +34,17 @@ export default function Uploader({
   serverless,
   whisperAvailable,
   whisperBackend,
+  ffmpegAvailable,
   onVideo,
   onTranscript,
+  onCutsOnly,
   onToast,
 }: Props) {
   const videoInput = useRef<HTMLInputElement>(null);
   const transcriptInput = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [cutting, setCutting] = useState(false);
   const [whisperMsg, setWhisperMsg] = useState<{ text: string; hints?: string[] } | null>(
     null,
   );
@@ -163,6 +169,44 @@ export default function Uploader({
       setTranscribing(false);
     }
   }
+
+  /** ✂️ 무음 자동 컷 (ffmpeg silencedetect) — Whisper 불필요, "컷만" 결과용 */
+  async function autoCut() {
+    if (!savedPath) {
+      onToast("먼저 영상을 업로드하세요");
+      return;
+    }
+    setCutting(true);
+    try {
+      const res = await fetch("/api/detect-silence", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ inputPath: savedPath }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        onToast(data.message || data.error || "무음 감지 실패");
+        return;
+      }
+      if (!data.segments || data.segments.length === 0) {
+        onToast("말이 있는 구간을 찾지 못했습니다(오디오 확인)");
+        return;
+      }
+      onCutsOnly(data.segments);
+      onToast(`무음 ${data.silenceCount}구간 감지 → 컷만 편집 계획 생성`);
+      setTimeout(() => {
+        document
+          .getElementById("results")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 100);
+    } catch (err) {
+      onToast(`무음 감지 실패: ${(err as Error).message}`);
+    } finally {
+      setCutting(false);
+    }
+  }
+
+  const cutDisabled = cutting || serverless || !ffmpegAvailable || !savedPath;
 
   /** 현재 segments 를 transcript.json 으로 다운로드 */
   function downloadTranscript() {
@@ -295,7 +339,35 @@ export default function Uploader({
                 : "영상 업로드 후 자동 자막 생성 가능"}
         </div>
 
-        <button className="btn btn-primary" style={{ marginTop: 10 }} onClick={loadSample}>
+        {/* ✂️ 무음 자동 컷 — Whisper 없이 컷만 뽑기(캡컷용) */}
+        <button
+          className="btn btn-primary"
+          style={{ marginTop: 10, background: cutDisabled ? undefined : "#1b64da" }}
+          onClick={autoCut}
+          disabled={cutDisabled}
+          title={
+            serverless
+              ? "무음 컷은 로컬(ffmpeg)에서만 동작"
+              : !ffmpegAvailable
+                ? "ffmpeg 가 설치되어 있지 않습니다"
+                : !savedPath
+                  ? "먼저 영상을 업로드하세요"
+                  : "오디오 무음을 감지해 컷만 적용합니다(Whisper 불필요)"
+          }
+        >
+          {cutting ? "✂️ 무음 감지 중…" : "✂️ 컷만 뽑기 (무음 자동 컷)"}
+        </button>
+        <div className="dropzone-hint" style={{ textAlign: "center", marginTop: 6 }}>
+          {serverless
+            ? "무음 컷은 로컬에서만 실행됩니다"
+            : !ffmpegAvailable
+              ? "ffmpeg 미설치 — 무음 컷 사용 불가"
+              : !savedPath
+                ? "영상 업로드 후 사용 가능 · Whisper 불필요"
+                : "자막·효과 없이 무음만 제거 → 캡컷에 바로 넣기 좋아요"}
+        </div>
+
+        <button className="btn btn-ghost" style={{ marginTop: 10 }} onClick={loadSample}>
           ⚡ 샘플로 편집 계획 생성
         </button>
         <div className="dropzone-hint" style={{ textAlign: "center", marginTop: 6 }}>

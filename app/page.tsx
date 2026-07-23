@@ -11,7 +11,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { EditSettings, TranscriptSegment, VideoMeta } from "@/lib/types";
 import type { RuntimeInfo } from "@/lib/env";
-import { DEFAULT_SETTINGS } from "@/lib/config/presets";
+import { DEFAULT_SETTINGS, cutsOnlySettings } from "@/lib/config/presets";
 import { buildEditPlan } from "@/lib/editing/planner";
 import type { BrollAsset } from "@/lib/editing/broll";
 import Uploader from "@/components/Uploader";
@@ -103,11 +103,17 @@ export default function Home() {
           serverless={env?.serverless ?? false}
           whisperAvailable={env?.whisper ?? false}
           whisperBackend={env?.whisperBackend ?? null}
+          ffmpegAvailable={env?.ffmpeg ?? false}
           onVideo={(m, p) => {
             setMeta(m);
             setSavedPath(p);
           }}
           onTranscript={setSegments}
+          onCutsOnly={(segs) => {
+            // 무음 감지 결과(speech 구간)를 세그먼트로 넣고 "컷만" 설정으로 전환
+            setSegments(segs);
+            setSettings((prev) => cutsOnlySettings(prev));
+          }}
           onToast={setToast}
         />
         <SettingsPanel settings={settings} onChange={setSettings} />

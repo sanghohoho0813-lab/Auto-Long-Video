@@ -95,6 +95,23 @@ export function buildSettings(preset: PresetName): EditSettings {
 
 export const DEFAULT_SETTINGS: EditSettings = buildSettings("default");
 
+/**
+ * "컷만" 설정 — 무음 컷만 적용하고 자막/줌/스포트라이트/B-roll/팝업은 모두 끈다.
+ * (캡컷 등에서 이어서 편집할 수 있게 무음만 제거한 깔끔한 영상용)
+ * 기존 설정의 컷 파라미터(임계값/패딩 등)는 그대로 유지한다.
+ */
+export function cutsOnlySettings(base: EditSettings): EditSettings {
+  return {
+    ...base,
+    cut: { ...base.cut, enabled: true },
+    zoom: { ...base.zoom, enabled: false },
+    spotlight: { ...base.spotlight, enabled: false },
+    broll: { ...base.broll, enabled: false },
+    popup: { ...base.popup, enabled: false },
+    subtitle: { ...base.subtitle, enabled: false },
+  };
+}
+
 /* ----------------------------- 유틸 ----------------------------- */
 
 type DeepPartial<T> = {
