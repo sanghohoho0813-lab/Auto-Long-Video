@@ -24,15 +24,11 @@ interface Props {
   cutSettings: EditSettings["cut"];
   onVideo: (meta: VideoMeta, savedPath: string | null) => void;
   onTranscript: (segments: TranscriptSegment[]) => void;
-  /** 무음 감지 컷: speech 구간 + 사용된 컷 기준을 넘겨 "컷만" 모드로 전환 */
+  /** 무음 감지 컷: 감지된 무음 구간을 곧바로 넘겨 "컷만" 계획을 만든다 */
   onCutsOnly: (
-    segments: TranscriptSegment[],
-    cutParams: {
-      silenceThreshold: number;
-      minSilenceDuration: number;
-      paddingBefore: number;
-      paddingAfter: number;
-    },
+    cuts: Array<{ start: number; end: number }>,
+    durationSec: number,
+    padding: number,
   ) => void;
   onToast: (msg: string) => void;
 }
@@ -208,18 +204,12 @@ export default function Uploader({
         onToast(data.message || data.error || "무음 감지 실패");
         return;
       }
-      if (!data.segments || data.segments.length === 0) {
-        onToast(
-          "잘라낼 무음을 찾지 못했어요. '많이'로 바꿔서 다시 눌러보세요.",
-        );
+      const cuts: Array<{ start: number; end: number }> = data.cuts ?? [];
+      if (cuts.length === 0) {
+        onToast("잘라낼 무음을 찾지 못했어요. '많이'로 바꿔서 다시 눌러보세요.");
         return;
       }
-      onCutsOnly(data.segments, {
-        silenceThreshold: data.usedThreshold ?? cutSettings.silenceThreshold,
-        minSilenceDuration: data.usedMinDuration ?? cutSettings.minSilenceDuration,
-        paddingBefore: data.usedPadding ?? 0.05,
-        paddingAfter: data.usedPadding ?? 0.05,
-      });
+      onCutsOnly(cuts, data.durationSec ?? 0, data.usedPadding ?? 0.05);
       const removedMin = Math.round(((data.removedSec ?? 0) / 60) * 10) / 10;
       const th = data.usedThreshold != null ? ` · 기준 ${data.usedThreshold}dB` : "";
       onToast(`무음 ${data.silenceCount}곳 · 약 ${removedMin}분 제거 예상${th}`);

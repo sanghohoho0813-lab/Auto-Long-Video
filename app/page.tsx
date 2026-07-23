@@ -12,7 +12,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { EditSettings, TranscriptSegment, VideoMeta } from "@/lib/types";
 import type { RuntimeInfo } from "@/lib/env";
 import { DEFAULT_SETTINGS, cutsOnlySettings } from "@/lib/config/presets";
-import { buildEditPlan } from "@/lib/editing/planner";
+import { buildEditPlan, buildCutsOnlyPlan } from "@/lib/editing/planner";
+import type { EditPlan } from "@/lib/types";
 import type { BrollAsset } from "@/lib/editing/broll";
 import Uploader from "@/components/Uploader";
 import SettingsPanel from "@/components/SettingsPanel";
@@ -30,6 +31,8 @@ export default function Home() {
   const [meta, setMeta] = useState<VideoMeta | null>(null);
   const [savedPath, setSavedPath] = useState<string | null>(null);
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
+  // "컷만 뽑기"로 만든 무음 컷 계획(있으면 이게 우선). transcript/샘플 로드 시 해제.
+  const [cutPlan, setCutPlan] = useState<EditPlan | null>(null);
   const [settings, setSettings] = useState<EditSettings>(DEFAULT_SETTINGS);
   const [broll, setBroll] = useState<BrollAsset[]>([]);
   const [env, setEnv] = useState<RuntimeState | null>(null);
@@ -59,7 +62,7 @@ export default function Home() {
   }, [toast]);
 
   // transcript 가 있을 때만 편집 계획 생성
-  const plan = useMemo(() => {
+  const computedPlan = useMemo(() => {
     if (segments.length === 0) return null;
     return buildEditPlan({
       segments,
@@ -71,8 +74,11 @@ export default function Home() {
     });
   }, [segments, settings, meta, broll]);
 
+  // "컷만 뽑기" 계획이 있으면 그게 우선(무음 감지 결과를 곧바로 컷으로 반영)
+  const plan = cutPlan ?? computedPlan;
+
   // 영상 없이 transcript(샘플 포함)만으로 만든 계획인지
-  const sampleMode = segments.length > 0 && !meta;
+  const sampleMode = !cutPlan && segments.length > 0 && !meta;
 
   return (
     <main className="page">
@@ -109,17 +115,23 @@ export default function Home() {
             setMeta(m);
             setSavedPath(p);
           }}
-          onTranscript={setSegments}
-          onCutsOnly={(segs, cutParams) => {
-            // 무음 감지 결과(speech 구간)를 세그먼트로 넣고 "컷만" 설정으로 전환.
-            // 감지에 실제로 쓰인 기준(임계값/최소 무음 길이)을 편집 계획에도 그대로 반영해야
-            // findGaps 가 감지된 무음을 동일하게 컷으로 만든다.
+          onTranscript={(segs) => {
+            setCutPlan(null); // 자막 기반으로 전환 → 무음컷 계획 해제
             setSegments(segs);
-            setSettings((prev) => {
-              const co = cutsOnlySettings(prev);
-              // 감지에 쓰인 임계값/최소무음/여유(패딩)를 편집 계획에 그대로 반영
-              return { ...co, cut: { ...co.cut, ...cutParams } };
-            });
+          }}
+          onCutsOnly={(cuts, durationSec, padding) => {
+            // 감지된 무음 구간을 곧바로 "컷만" 계획으로 만든다(우회 없이 직접)
+            const dur = durationSec || meta?.durationSec || 0;
+            setCutPlan(
+              buildCutsOnlyPlan({
+                silences: cuts,
+                durationSec: dur,
+                source: meta,
+                settings: cutsOnlySettings(settings),
+                padding,
+                now: "preview",
+              }),
+            );
           }}
           onToast={setToast}
         />

@@ -171,6 +171,8 @@ export async function POST(req: Request) {
       maxVolume: max,
       // 참고: 스캔 곡선(디버그/튜닝용)
       scan: scans.map((s) => ({ th: s.th, sec: round(s.total) })),
+      // 감지된 무음 구간(=컷 대상). 클라이언트가 이걸로 곧바로 컷 생성.
+      cuts: silences.map((s) => ({ start: round(s.start), end: round(s.end) })),
       segments,
     });
   } catch (err) {
