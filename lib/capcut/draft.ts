@@ -51,6 +51,14 @@ function hexUuid(): string {
   return randomUUID().replace(/-/g, "");
 }
 
+/**
+ * CapCut/剪映이 쓰는 경로 표기로 변환: Windows에서도 구분자를 슬래시(/)로 기록한다.
+ * (백슬래시 그대로 넣으면 "비정상 경로"로 거부됨)
+ */
+function toCapCutPath(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
 /** 하나의 원본 영상 소재(video material) JSON */
 function videoMaterialJson(input: DraftBuildInput, materialId: string) {
   return {
@@ -77,7 +85,7 @@ function videoMaterialJson(input: DraftBuildInput, materialId: string) {
     material_id: materialId,
     material_name: input.sourceName,
     media_path: "",
-    path: input.sourceAbsPath,
+    path: toCapCutPath(input.sourceAbsPath),
     type: "video",
     width: input.width,
   };
@@ -297,10 +305,9 @@ export function buildDraftMeta(params: {
       draft_enterprise_name: "",
       enterprise_material: [],
     },
-    // 경로 칸은 비워둔다: CapCut이 프로젝트를 발견한 "실제 위치"를 스스로 채우게 해서
-    // 경로 형식 불일치(백슬래시/슬래시/정규화 차이)로 인한 "비정상 경로" 거부를 피한다.
-    // (검증된 참조 구현이 실제로 동작하는 방식 — 경로를 직접 써넣지 않음)
-    draft_fold_path: "",
+    // CapCut/剪映은 Windows에서도 경로를 슬래시(/)로 기록한다. 백슬래시로 쓰거나
+    // 비워두면 "비정상 경로"로 거부되므로, 실제 위치를 슬래시 형식으로 적는다.
+    draft_fold_path: toCapCutPath(params.draftFoldPath),
     draft_id: params.draftId,
     draft_is_ai_packaging_used: false,
     draft_is_ai_shorts: false,
@@ -321,7 +328,7 @@ export function buildDraftMeta(params: {
     draft_name: params.draftName,
     draft_new_version: "",
     draft_removable_storage_device: "",
-    draft_root_path: "",
+    draft_root_path: toCapCutPath(params.draftRootPath),
     draft_segment_extra_info: [],
     draft_type: "",
     tm_draft_cloud_completed: "",
