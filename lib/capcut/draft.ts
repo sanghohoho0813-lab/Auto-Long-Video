@@ -348,7 +348,10 @@ export interface WriteDraftResult {
 }
 
 /**
- * CapCut 드래프트 폴더를 실제로 생성한다(draft_content.json + draft_meta_info.json).
+ * CapCut 드래프트 폴더를 실제로 생성한다.
+ * 타임라인 파일은 버전에 따라 읽는 이름이 달라서 두 이름으로 모두 쓴다:
+ *  - draft_content.json … 剪映(중국판)·구버전 CapCut
+ *  - draft_info.json    … 국제판 CapCut 다수 버전
  * @param draftsDir CapCut 프로젝트 루트(com.lveditor.draft). 없으면 resolveCapCutDraftsDir()로 자동.
  */
 export async function writeCapCutDraft(
@@ -372,9 +375,12 @@ export async function writeCapCutDraft(
     nowMs,
   });
 
+  const contentJson = JSON.stringify(content, null, 4);
   const contentPath = path.join(draftDir, "draft_content.json");
+  const infoPath = path.join(draftDir, "draft_info.json");
   const metaPath = path.join(draftDir, "draft_meta_info.json");
-  await fs.writeFile(contentPath, JSON.stringify(content, null, 4), "utf-8");
+  await fs.writeFile(contentPath, contentJson, "utf-8");
+  await fs.writeFile(infoPath, contentJson, "utf-8");
   await fs.writeFile(metaPath, JSON.stringify(meta, null, 4), "utf-8");
 
   const tracks = content.tracks as Array<{ segments: unknown[] }>;
