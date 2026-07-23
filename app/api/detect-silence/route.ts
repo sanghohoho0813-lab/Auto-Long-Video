@@ -34,7 +34,8 @@ const MODE_PROFILE: Record<
   gentle: { belowMax: 18, minDur: 0.6 }, // 조금
   normal: { belowMax: 14, minDur: 0.45 }, // 보통
   aggressive: { belowMax: 10, minDur: 0.35 }, // 많이
-  max: { belowMax: 6, minDur: 0.3 }, // 아주 많이: 큰 목소리 외엔 다 컷
+  max: { belowMax: 6, minDur: 0.3 }, // 아주 많이
+  extreme: { belowMax: 3, minDur: 0.25 }, // 최대한: 큰 목소리 외엔 거의 다 컷
 };
 
 // 감지 전용 사전 필터: 에어컨/선풍기의 낮은 "웅~" 소리를 걷어내 무음 감지를 도움.
@@ -54,7 +55,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       inputPath?: string;
       // 자동 모드(권장): 볼륨 분석 후 기준 자동 결정
-      mode?: "gentle" | "normal" | "aggressive" | "max";
+      mode?: "gentle" | "normal" | "aggressive" | "max" | "extreme";
       // 수동 모드(고급): 직접 dB/초 지정
       silenceThreshold?: number;
       minSilenceDuration?: number;
@@ -107,7 +108,10 @@ export async function POST(req: Request) {
       meanVolume = mean;
       maxVolume = max;
       const base = max ?? (mean !== null ? mean + 10 : -10);
-      noiseDb = clamp(Math.round(base - profile.belowMax), -45, -8);
+      // 상한은 "가장 큰 소리보다 2dB 아래"까지 — 최고음(피크)만 보존하고
+      // 나머지는 모드에 따라 얼마든지 공격적으로 자를 수 있게 한다.
+      const upper = Math.round(base - 2);
+      noiseDb = clamp(Math.round(base - profile.belowMax), -60, upper);
       minDur = profile.minDur;
     } else {
       noiseDb = body.silenceThreshold ?? -30;

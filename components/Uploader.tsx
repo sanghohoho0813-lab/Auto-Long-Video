@@ -32,12 +32,13 @@ interface Props {
   onToast: (msg: string) => void;
 }
 
-type CutMode = "gentle" | "normal" | "aggressive" | "max";
+type CutMode = "gentle" | "normal" | "aggressive" | "max" | "extreme";
 const CUT_MODE_LABEL: Record<CutMode, string> = {
   gentle: "조금",
   normal: "보통",
   aggressive: "많이",
   max: "아주 많이",
+  extreme: "최대한",
 };
 
 export default function Uploader({
@@ -376,7 +377,7 @@ export default function Uploader({
           얼마나 자를까요?
         </div>
         <div className="cutmode-row">
-          {(["gentle", "normal", "aggressive", "max"] as CutMode[]).map((m) => (
+          {(["gentle", "normal", "aggressive", "max", "extreme"] as CutMode[]).map((m) => (
             <button
               key={m}
               className={`cutmode ${cutMode === m ? "active" : ""}`}
