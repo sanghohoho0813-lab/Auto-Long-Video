@@ -223,11 +223,10 @@ export default function Uploader({
       const removedMin = Math.round(((data.removedSec ?? 0) / 60) * 10) / 10;
       const th = data.usedThreshold != null ? ` · 기준 ${data.usedThreshold}dB` : "";
       onToast(`무음 ${data.silenceCount}곳 · 약 ${removedMin}분 제거 예상${th}`);
-      if ((data.removedSec ?? 0) < 5) {
+      if ((data.removedSec ?? 0) < 3) {
         // 거의 안 잘리면 더 센 모드를 권유
         setTimeout(
-          () =>
-            onToast("거의 안 잘렸어요 — 위에서 '아주 많이'로 바꿔 다시 눌러보세요"),
+          () => onToast("거의 안 잘렸어요 — 위에서 '많이'로 바꿔 다시 눌러보세요"),
           2700,
         );
       }

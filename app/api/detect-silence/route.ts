@@ -23,15 +23,21 @@ import {
 import type { TranscriptSegment } from "@/lib/types";
 
 /**
- * "얼마나 자를지" 3단계 → 내 최대 음량(max) 대비 몇 dB 아래를 무음으로 볼지.
- * belowMax 가 작을수록(기준이 높을수록) 더 과감하게 잘림.
- * mergeGap: 무음 사이 아주 짧은 말 조각(잡음/숨소리)은 합쳐서 함께 잘라 조각남 방지.
+ * "얼마나 자를지" 3단계 → "최소 몇 %의 말을 남길지(keepFloor)".
+ * 앱이 여러 기준(dB)을 스캔해서, 말을 keepFloor 이상 남기면서 가장 많이 자르는 기준을
+ * 자동으로 고른다. (고정 dB로 찍지 않으므로 영상마다 잡음 위치가 달라도 알아서 맞춤)
+ * 값이 작을수록 더 과감(말을 덜 남기고 더 자름).
  */
-const MODE_PROFILE: Record<string, { belowMax: number; minDur: number; mergeGap: number }> = {
-  gentle: { belowMax: 15, minDur: 0.5, mergeGap: 0.25 }, // 조금
-  normal: { belowMax: 10, minDur: 0.4, mergeGap: 0.3 }, // 보통
-  aggressive: { belowMax: 5, minDur: 0.3, mergeGap: 0.45 }, // 많이 (과감)
+const MODE_KEEP_FLOOR: Record<string, { keep: number; minDur: number; mergeGap: number }> = {
+  gentle: { keep: 0.6, minDur: 0.45, mergeGap: 0.25 }, // 조금
+  normal: { keep: 0.45, minDur: 0.35, mergeGap: 0.3 }, // 보통
+  aggressive: { keep: 0.25, minDur: 0.3, mergeGap: 0.45 }, // 많이 (과감)
 };
+
+// 스캔할 기준들: 최대음량(max) 대비 아래로 이만큼(dB). 잡음 바닥이 어디든 걸리게 넓게.
+// 위쪽(4)은 말소리 근처라 과감 모드가 더 자를 수 있게 포함(가드가 과다컷은 거름).
+// (병렬 실행하므로 개수를 적당히 유지)
+const SCAN_BELOW_MAX = [28, 22, 17, 13, 10, 7, 4];
 
 // 컷 경계에 남길 아주 짧은 여유(초). 예전 0.15는 짧은 컷을 다 먹어버려 문제였음.
 const CUT_PADDING = 0.05;
@@ -39,10 +45,6 @@ const CUT_PADDING = 0.05;
 // 감지 전용 사전 필터: 에어컨/선풍기의 낮은 "웅~" 소리를 걷어내 무음 감지를 도움.
 // (출력 영상 오디오에는 영향 없음 — 오직 "어디를 자를지" 찾는 용도)
 const DETECT_PREFILTER = "highpass=f=120";
-
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.min(hi, Math.max(lo, v));
-}
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -93,31 +95,7 @@ export async function POST(req: Request) {
       });
     }
 
-    // 자동 모드: 영상 볼륨을 분석해 기준을 스스로 정한다(사용자가 dB 몰라도 됨)
-    let noiseDb: number;
-    let minDur: number;
-    let mergeGap = 0.3;
-    let meanVolume: number | null = null;
-    let maxVolume: number | null = null;
-    const usePrefilter = !!body.mode; // 자동 모드에서만 저주파 제거로 감지 도움
-    if (body.mode) {
-      const profile = MODE_PROFILE[body.mode] ?? MODE_PROFILE.normal;
-      // 저주파(하울/팬음)를 걷어낸 뒤의 볼륨으로 기준을 잡는다(감지 신호와 일치)
-      const { mean, max } = await probeMeanVolume(abs, DETECT_PREFILTER);
-      meanVolume = mean;
-      maxVolume = max;
-      const base = max ?? (mean !== null ? mean + 10 : -10);
-      // 상한은 "가장 큰 소리보다 2dB 아래"까지 — 최고음(피크)만 보존
-      const upper = Math.round(base - 2);
-      noiseDb = clamp(Math.round(base - profile.belowMax), -60, upper);
-      minDur = profile.minDur;
-      mergeGap = profile.mergeGap;
-    } else {
-      noiseDb = body.silenceThreshold ?? -30;
-      minDur = body.minSilenceDuration ?? 0.6;
-    }
-
-    // 길이 파악(ffprobe 없으면 무음 마지막 지점으로 근사)
+    // 길이 파악
     let duration = 0;
     if (ffprobe) {
       try {
@@ -127,21 +105,47 @@ export async function POST(req: Request) {
       }
     }
 
-    const rawSilences = await detectSilence(
-      abs,
-      noiseDb,
-      minDur,
-      usePrefilter ? DETECT_PREFILTER : undefined,
+    const profile = MODE_KEEP_FLOOR[body.mode ?? "normal"] ?? MODE_KEEP_FLOOR.normal;
+    const minDur = profile.minDur;
+    const mergeGap = profile.mergeGap;
+
+    // 저주파(에어컨/선풍기) 제거 후 볼륨 측정 → 스캔 기준점
+    const { mean, max } = await probeMeanVolume(abs, DETECT_PREFILTER);
+    const base = max ?? (mean !== null ? mean + 10 : -10);
+
+    // 여러 기준(dB)을 병렬로 스캔: 각각 감지→병합→총 무음 계산 (오디오만 디코딩해 빠름)
+    type Scan = { th: number; silences: Array<{ start: number; end: number }>; total: number };
+    const scans: Scan[] = await Promise.all(
+      SCAN_BELOW_MAX.map(async (below) => {
+        const th = Math.round(base - below);
+        const raw = await detectSilence(abs, th, minDur, DETECT_PREFILTER);
+        const merged = mergeSilences(raw, mergeGap);
+        const total = merged.reduce((s, r) => s + (r.end - r.start), 0);
+        return { th, silences: merged, total };
+      }),
     );
+    // 기준(th) 오름차순 정렬(선택 로직이 순서에 의존)
+    scans.sort((a, b) => a.th - b.th);
     if (!duration) {
-      duration = rawSilences.reduce((m, s) => Math.max(m, s.end), 0) + 1;
+      duration = Math.max(...scans.map((s) => s.silences.reduce((m, r) => Math.max(m, r.end), 0)), 1) + 1;
     }
 
-    // 무음 사이의 아주 짧은 말 조각(<mergeGap: 잡음/숨소리)은 합쳐서 함께 자른다.
-    // → 강한 모드에서 말이 잘게 쪼개져 컷이 사라지던 문제(비단조/0초) 해결.
-    const silences = mergeSilences(rawSilences, mergeGap);
+    // "말을 keep 이상 남기면서 가장 많이 자르는" 기준 선택.
+    // (기준이 높을수록 무음↑ → 오름차순 total. keep 조건을 만족하는 가장 공격적인 것)
+    const cap = duration * (1 - profile.keep); // 제거 상한(초)
+    const minCut = Math.max(0.3, duration * 0.002); // 최소한 이 정도는 잘려야 "찾음"
+    let chosen: Scan | null = null;
+    for (const s of scans) {
+      if (s.total > minCut && s.total <= cap) chosen = s; // 조건 만족 중 가장 높은 기준(=가장 많이)
+    }
+    // 조건 만족이 없으면: 뭐라도 자른 것 중 가장 적게 자른 것(과다컷 방지), 그것도 없으면 최상위
+    if (!chosen) {
+      chosen =
+        scans.filter((s) => s.total > minCut).sort((a, b) => a.total - b.total)[0] ??
+        scans[scans.length - 1];
+    }
 
-    // 무음의 여집합 = 말이 있는 구간(speech regions)
+    const silences = chosen.silences;
     const speech = complement(silences, duration);
     const segments: TranscriptSegment[] = speech.map((r) => ({
       start: round(r.start),
@@ -149,7 +153,7 @@ export async function POST(req: Request) {
       text: "",
     }));
 
-    // 실제 제거량 = 각 무음 - 앞뒤 여유(패딩). 짧은 여유라 대부분 그대로 제거됨.
+    // 실제 제거량 = 각 무음 - 앞뒤 여유(패딩)
     const removedSec = silences.reduce(
       (sum, s) => sum + Math.max(0, s.end - s.start - 2 * CUT_PADDING),
       0,
@@ -160,12 +164,13 @@ export async function POST(req: Request) {
       durationSec: round(duration),
       silenceCount: silences.length,
       removedSec: round(removedSec),
-      // 클라이언트가 편집 계획에 동일하게 반영하도록 사용된 기준을 함께 반환
-      usedThreshold: noiseDb,
+      usedThreshold: chosen.th,
       usedMinDuration: minDur,
       usedPadding: CUT_PADDING,
-      meanVolume,
-      maxVolume,
+      meanVolume: mean,
+      maxVolume: max,
+      // 참고: 스캔 곡선(디버그/튜닝용)
+      scan: scans.map((s) => ({ th: s.th, sec: round(s.total) })),
       segments,
     });
   } catch (err) {

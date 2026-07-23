@@ -95,7 +95,8 @@ export async function probeMeanVolume(
 ): Promise<{ mean: number | null; max: number | null }> {
   try {
     const af = prefilter ? `${prefilter},volumedetect` : "volumedetect";
-    const { stderr } = await run("ffmpeg", ["-i", filePath, "-af", af, "-f", "null", "-"]);
+    // -vn: 영상 디코딩을 건너뛰어(오디오만) 훨씬 빠르게 측정
+    const { stderr } = await run("ffmpeg", ["-vn", "-i", filePath, "-af", af, "-f", "null", "-"]);
     const mean = matchDb(stderr, /mean_volume:\s*(-?[0-9.]+)\s*dB/);
     const max = matchDb(stderr, /max_volume:\s*(-?[0-9.]+)\s*dB/);
     return { mean, max };
@@ -118,7 +119,8 @@ export async function detectSilence(
 ): Promise<Array<{ start: number; end: number }>> {
   const detect = `silencedetect=noise=${noiseDb}dB:d=${minDurationSec}`;
   const af = prefilter ? `${prefilter},${detect}` : detect;
-  const args = ["-i", filePath, "-af", af, "-f", "null", "-"];
+  // -vn: 영상 디코딩 생략(오디오만) → 긴 영상도 빠르게 감지
+  const args = ["-vn", "-i", filePath, "-af", af, "-f", "null", "-"];
   const { stderr } = await run("ffmpeg", args);
   return parseSilenceLog(stderr);
 }
