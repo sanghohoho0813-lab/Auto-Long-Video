@@ -117,6 +117,7 @@ export default function Home() {
             setSegments(segs);
             setSettings((prev) => {
               const co = cutsOnlySettings(prev);
+              // 감지에 쓰인 임계값/최소무음/여유(패딩)를 편집 계획에 그대로 반영
               return { ...co, cut: { ...co.cut, ...cutParams } };
             });
           }}

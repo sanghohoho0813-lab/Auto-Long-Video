@@ -23,20 +23,18 @@ import {
 import type { TranscriptSegment } from "@/lib/types";
 
 /**
- * "얼마나 자를지" 모드 → 내 최대 음량(max) 대비 몇 dB 아래를 무음으로 볼지 + 최소 무음 길이.
- * 평균이 아니라 "가장 크게 말한 소리" 기준이라, 배경 잡음이 깔려도 큰 목소리만 남긴다.
- * belowMax 가 작을수록(=기준이 높을수록) 더 공격적으로 잘림.
+ * "얼마나 자를지" 3단계 → 내 최대 음량(max) 대비 몇 dB 아래를 무음으로 볼지.
+ * belowMax 가 작을수록(기준이 높을수록) 더 과감하게 잘림.
+ * mergeGap: 무음 사이 아주 짧은 말 조각(잡음/숨소리)은 합쳐서 함께 잘라 조각남 방지.
  */
-const MODE_PROFILE: Record<
-  string,
-  { belowMax: number; minDur: number }
-> = {
-  gentle: { belowMax: 18, minDur: 0.6 }, // 조금
-  normal: { belowMax: 14, minDur: 0.45 }, // 보통
-  aggressive: { belowMax: 10, minDur: 0.35 }, // 많이
-  max: { belowMax: 6, minDur: 0.3 }, // 아주 많이
-  extreme: { belowMax: 3, minDur: 0.25 }, // 최대한: 큰 목소리 외엔 거의 다 컷
+const MODE_PROFILE: Record<string, { belowMax: number; minDur: number; mergeGap: number }> = {
+  gentle: { belowMax: 15, minDur: 0.5, mergeGap: 0.25 }, // 조금
+  normal: { belowMax: 10, minDur: 0.4, mergeGap: 0.3 }, // 보통
+  aggressive: { belowMax: 5, minDur: 0.3, mergeGap: 0.45 }, // 많이 (과감)
 };
+
+// 컷 경계에 남길 아주 짧은 여유(초). 예전 0.15는 짧은 컷을 다 먹어버려 문제였음.
+const CUT_PADDING = 0.05;
 
 // 감지 전용 사전 필터: 에어컨/선풍기의 낮은 "웅~" 소리를 걷어내 무음 감지를 도움.
 // (출력 영상 오디오에는 영향 없음 — 오직 "어디를 자를지" 찾는 용도)
@@ -55,7 +53,7 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       inputPath?: string;
       // 자동 모드(권장): 볼륨 분석 후 기준 자동 결정
-      mode?: "gentle" | "normal" | "aggressive" | "max" | "extreme";
+      mode?: "gentle" | "normal" | "aggressive";
       // 수동 모드(고급): 직접 dB/초 지정
       silenceThreshold?: number;
       minSilenceDuration?: number;
@@ -98,6 +96,7 @@ export async function POST(req: Request) {
     // 자동 모드: 영상 볼륨을 분석해 기준을 스스로 정한다(사용자가 dB 몰라도 됨)
     let noiseDb: number;
     let minDur: number;
+    let mergeGap = 0.3;
     let meanVolume: number | null = null;
     let maxVolume: number | null = null;
     const usePrefilter = !!body.mode; // 자동 모드에서만 저주파 제거로 감지 도움
@@ -108,11 +107,11 @@ export async function POST(req: Request) {
       meanVolume = mean;
       maxVolume = max;
       const base = max ?? (mean !== null ? mean + 10 : -10);
-      // 상한은 "가장 큰 소리보다 2dB 아래"까지 — 최고음(피크)만 보존하고
-      // 나머지는 모드에 따라 얼마든지 공격적으로 자를 수 있게 한다.
+      // 상한은 "가장 큰 소리보다 2dB 아래"까지 — 최고음(피크)만 보존
       const upper = Math.round(base - 2);
       noiseDb = clamp(Math.round(base - profile.belowMax), -60, upper);
       minDur = profile.minDur;
+      mergeGap = profile.mergeGap;
     } else {
       noiseDb = body.silenceThreshold ?? -30;
       minDur = body.minSilenceDuration ?? 0.6;
@@ -128,27 +127,33 @@ export async function POST(req: Request) {
       }
     }
 
-    const silences = await detectSilence(
+    const rawSilences = await detectSilence(
       abs,
       noiseDb,
       minDur,
       usePrefilter ? DETECT_PREFILTER : undefined,
     );
     if (!duration) {
-      duration = silences.reduce((m, s) => Math.max(m, s.end), 0) + 1;
+      duration = rawSilences.reduce((m, s) => Math.max(m, s.end), 0) + 1;
     }
+
+    // 무음 사이의 아주 짧은 말 조각(<mergeGap: 잡음/숨소리)은 합쳐서 함께 자른다.
+    // → 강한 모드에서 말이 잘게 쪼개져 컷이 사라지던 문제(비단조/0초) 해결.
+    const silences = mergeSilences(rawSilences, mergeGap);
 
     // 무음의 여집합 = 말이 있는 구간(speech regions)
     const speech = complement(silences, duration);
-    // 각 speech 구간을 세그먼트로(텍스트는 비움 — 컷 편집에만 사용)
     const segments: TranscriptSegment[] = speech.map((r) => ({
       start: round(r.start),
       end: round(r.end),
       text: "",
     }));
 
-    // 제거 예상 총량(패딩 고려 전 대략치)
-    const removedSec = silences.reduce((sum, s) => sum + (s.end - s.start), 0);
+    // 실제 제거량 = 각 무음 - 앞뒤 여유(패딩). 짧은 여유라 대부분 그대로 제거됨.
+    const removedSec = silences.reduce(
+      (sum, s) => sum + Math.max(0, s.end - s.start - 2 * CUT_PADDING),
+      0,
+    );
 
     return NextResponse.json({
       ok: true,
@@ -158,10 +163,10 @@ export async function POST(req: Request) {
       // 클라이언트가 편집 계획에 동일하게 반영하도록 사용된 기준을 함께 반환
       usedThreshold: noiseDb,
       usedMinDuration: minDur,
+      usedPadding: CUT_PADDING,
       meanVolume,
       maxVolume,
       segments,
-      silences: silences.map((s) => ({ start: round(s.start), end: round(s.end) })),
     });
   } catch (err) {
     return NextResponse.json(
@@ -169,6 +174,26 @@ export async function POST(req: Request) {
       { status: 500 },
     );
   }
+}
+
+/** 서로 mergeGap 초 이내로 붙어있는 무음들을 하나로 합친다(짧은 말 조각 흡수). */
+function mergeSilences(
+  silences: Array<{ start: number; end: number }>,
+  mergeGap: number,
+): Array<{ start: number; end: number }> {
+  const sorted = [...silences]
+    .filter((s) => s.end > s.start)
+    .sort((a, b) => a.start - b.start);
+  const merged: Array<{ start: number; end: number }> = [];
+  for (const s of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && s.start - last.end <= mergeGap) {
+      last.end = Math.max(last.end, s.end);
+    } else {
+      merged.push({ start: s.start, end: s.end });
+    }
+  }
+  return merged;
 }
 
 /** 무음 구간의 여집합(=말 구간)을 [0, duration] 안에서 구한다. */

@@ -27,18 +27,21 @@ interface Props {
   /** 무음 감지 컷: speech 구간 + 사용된 컷 기준을 넘겨 "컷만" 모드로 전환 */
   onCutsOnly: (
     segments: TranscriptSegment[],
-    cutParams: { silenceThreshold: number; minSilenceDuration: number },
+    cutParams: {
+      silenceThreshold: number;
+      minSilenceDuration: number;
+      paddingBefore: number;
+      paddingAfter: number;
+    },
   ) => void;
   onToast: (msg: string) => void;
 }
 
-type CutMode = "gentle" | "normal" | "aggressive" | "max" | "extreme";
+type CutMode = "gentle" | "normal" | "aggressive";
 const CUT_MODE_LABEL: Record<CutMode, string> = {
   gentle: "조금",
   normal: "보통",
   aggressive: "많이",
-  max: "아주 많이",
-  extreme: "최대한",
 };
 
 export default function Uploader({
@@ -60,7 +63,7 @@ export default function Uploader({
   const [uploading, setUploading] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [cutting, setCutting] = useState(false);
-  const [cutMode, setCutMode] = useState<CutMode>("aggressive");
+  const [cutMode, setCutMode] = useState<CutMode>("normal");
   const [whisperMsg, setWhisperMsg] = useState<{ text: string; hints?: string[] } | null>(
     null,
   );
@@ -214,6 +217,8 @@ export default function Uploader({
       onCutsOnly(data.segments, {
         silenceThreshold: data.usedThreshold ?? cutSettings.silenceThreshold,
         minSilenceDuration: data.usedMinDuration ?? cutSettings.minSilenceDuration,
+        paddingBefore: data.usedPadding ?? 0.05,
+        paddingAfter: data.usedPadding ?? 0.05,
       });
       const removedMin = Math.round(((data.removedSec ?? 0) / 60) * 10) / 10;
       const th = data.usedThreshold != null ? ` · 기준 ${data.usedThreshold}dB` : "";
@@ -377,7 +382,7 @@ export default function Uploader({
           얼마나 자를까요?
         </div>
         <div className="cutmode-row">
-          {(["gentle", "normal", "aggressive", "max", "extreme"] as CutMode[]).map((m) => (
+          {(["gentle", "normal", "aggressive"] as CutMode[]).map((m) => (
             <button
               key={m}
               className={`cutmode ${cutMode === m ? "active" : ""}`}
